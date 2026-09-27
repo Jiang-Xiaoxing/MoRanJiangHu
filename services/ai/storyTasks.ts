@@ -381,6 +381,49 @@ export const generatePolishedBody = async (
     };
 };
 
+// 「角色对话」侧聊：清理单条回复。部分模型会习惯性带上 thinking 块或正文标签，
+// 侧聊只要纯对白，这里统一剥掉。
+export const 清理角色对话输出 = (rawText: string): string => {
+    let text = String(rawText || '');
+    text = text.replace(/<thinking>[\s\S]*?<\/thinking>/gi, '');
+    text = text.replace(/<think>[\s\S]*?<\/think>/gi, '');
+    const bodyMatches = Array.from(text.matchAll(/<正文>([\s\S]*?)<\/正文>/gi));
+    if (bodyMatches.length > 0) {
+        text = bodyMatches[bodyMatches.length - 1][1];
+    } else {
+        const openMatch = Array.from(text.matchAll(/<正文>([\s\S]*)$/gi));
+        if (openMatch.length > 0) text = openMatch[openMatch.length - 1][1];
+    }
+    return text
+        .replace(/<judge>[\s\S]*?<\/judge>/gi, '')
+        .replace(/<角色对话协议>[\s\S]*?<\/角色对话协议>/g, '')
+        .trim();
+};
+
+export const generateRoleChatReply = async (
+    messages: 通用消息[],
+    apiConfig: 当前可用接口结构,
+    options?: {
+        signal?: AbortSignal;
+        streamOptions?: WorldStreamOptions;
+        temperature?: number;
+    }
+): Promise<string> => {
+    if (!apiConfig.apiKey) throw new Error('Missing API Key');
+    const normalizedMessages = Array.isArray(messages)
+        ? messages.filter((msg) => msg && typeof msg.content === 'string' && msg.content.trim().length > 0)
+        : [];
+    if (normalizedMessages.length === 0) throw new Error('角色对话消息序列为空');
+    const finalMessages = 规范化文本补全消息链(normalizedMessages, { 保留System: true, 合并同角色: false });
+    const raw = await 请求模型文本(apiConfig, finalMessages, {
+        temperature: options?.temperature ?? 0.85,
+        signal: options?.signal,
+        streamOptions: options?.streamOptions,
+        errorDetailLimit: Number.POSITIVE_INFINITY
+    });
+    return 清理角色对话输出(raw);
+};
+
 export const generateWorldData = async (
     worldContext: string,
     charData: any,
