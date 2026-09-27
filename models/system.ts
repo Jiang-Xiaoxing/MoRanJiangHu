@@ -327,6 +327,12 @@ export interface 功能模型占位配置结构 {
     文章优化API地址: string;
     文章优化API密钥: string;
     文章优化提示词: string;
+    角色对话独立模型开关: boolean;
+    角色对话使用模型: string;
+    角色对话渠道ID?: string;
+    角色对话API地址: string;
+    角色对话API密钥: string;
+    角色对话提示词: string;
     小说拆分使用模型: string;
     小说拆分渠道ID?: string;
     小说拆分API地址: string;
@@ -1320,6 +1326,15 @@ export interface 聊天记录结构 {
     [key: string]: any; // Allow extensibility for structuredResponse etc.
 }
 
+// 「角色对话」侧聊暂存消息：独立模型扮演单个 NPC 的场外对话，
+// 不进入聊天记录，仅在玩家下一次提交主行动时打包注入主剧情上下文。
+export interface 场外对话消息结构 {
+    role: 'player' | 'npc';
+    发言人: string; // 玩家角色名 / NPC 姓名
+    内容: string;
+    时间: number; // 现实时间戳 Date.now()
+}
+
 export interface 存档元数据结构 {
     schemaVersion?: number;
     历史记录条数?: number;
@@ -1382,6 +1397,7 @@ export interface 存档结构 {
     当前角色锚点ID?: string;
     拍卖行?: any;
     叙事平静值?: 叙事状态结构;
+    场外对话?: 场外对话消息结构[];
 }
 
 export type PromptCategory = '核心设定' | '数值设定' | '难度设定' | '写作设定' | '自定义';

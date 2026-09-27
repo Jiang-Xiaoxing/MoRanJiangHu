@@ -21,7 +21,7 @@
 import { 加载并展开货币系统 } from './currencySystemLoader';
 import { 中转可用, 构建AI中转地址 } from '../services/ai/corsRelay';
 import { 默认ComfyUI工作流JSON, 默认NSFWComfyUI工作流JSON } from '../data/defaultComfyWorkflow';
-import { 默认文章优化提示词 } from '../prompts/runtime/defaults';
+import { 默认文章优化提示词, 默认角色对话提示词 } from '../prompts/runtime/defaults';
 import {
     fetchDiscoveredImageBackends,
     isImageBackendRecentlyUnavailable,
@@ -851,6 +851,12 @@ export const 默认功能模型占位: 功能模型占位配置结构 = {
     文章优化API地址: '',
     文章优化API密钥: '',
     文章优化提示词: 默认文章优化提示词,
+    角色对话独立模型开关: false,
+    角色对话使用模型: '',
+    角色对话渠道ID: '',
+    角色对话API地址: '',
+    角色对话API密钥: '',
+    角色对话提示词: 默认角色对话提示词,
     小说拆分使用模型: '',
     小说拆分渠道ID: '',
     小说拆分API地址: '',
@@ -1608,6 +1614,14 @@ const 标准化功能模型占位 = (raw: any): 功能模型占位配置结构 =
         文章优化API地址: 读取字符串(raw?.文章优化API地址),
         文章优化API密钥: 读取字符串(raw?.文章优化API密钥),
         文章优化提示词: polishPromptCandidate.trim().length > 0 ? polishPromptCandidate : 默认文章优化提示词,
+        角色对话独立模型开关: Boolean(raw?.角色对话独立模型开关),
+        角色对话使用模型: 读取字符串(raw?.角色对话使用模型),
+        角色对话渠道ID: 读取字符串(raw?.角色对话渠道ID),
+        角色对话API地址: 读取字符串(raw?.角色对话API地址),
+        角色对话API密钥: 读取字符串(raw?.角色对话API密钥),
+        角色对话提示词: typeof raw?.角色对话提示词 === 'string' && raw.角色对话提示词.trim().length > 0
+            ? raw.角色对话提示词
+            : 默认角色对话提示词,
         小说拆分使用模型: 读取字符串(raw?.小说拆分使用模型),
         小说拆分渠道ID: 读取字符串(raw?.小说拆分渠道ID),
         小说拆分API地址: 读取字符串(raw?.小说拆分API地址),
@@ -2221,6 +2235,19 @@ export const 获取文章优化接口配置 = (settings: 接口设置结构): �
         使用模型: feature?.文章优化使用模型,
         API地址: feature?.文章优化API地址,
         API密钥: feature?.文章优化API密钥
+    });
+};
+
+// 「角色对话」侧聊：独立模型是硬前提，未开启/未配齐一律返回 null（由调用方给出引导，不回退主模型）。
+export const 获取角色对话接口配置 = (settings: 接口设置结构): 当前可用接口结构 | null => {
+    const feature = (settings as any)?.功能模型占位;
+    const independent = Boolean(feature?.角色对话独立模型开关);
+    if (!independent) return null;
+    return 构建独立文本接口配置(settings, {
+        渠道ID: feature?.角色对话渠道ID,
+        使用模型: feature?.角色对话使用模型,
+        API地址: feature?.角色对话API地址,
+        API密钥: feature?.角色对话API密钥
     });
 };
 
