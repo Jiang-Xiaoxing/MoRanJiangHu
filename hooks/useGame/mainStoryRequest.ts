@@ -120,6 +120,7 @@ export const 构建主剧情请求参数 = (
         updatedMemSys: 记忆系统结构;
         sendInput: string;
         recallTag?: string;
+        场外对话提示?: string;
         novelDecompositionPrompt?: string;
         playerRole?: 角色数据结构;
         builtinPromptEntries?: 内置提示词条目结构[];
@@ -240,6 +241,16 @@ export const 构建主剧情请求参数 = (
                 content: lengthRequirementPrompt.trim()
             });
         }
+        const tavernRoleChatPrompt = (params.场外对话提示 || '').trim();
+        if (tavernRoleChatPrompt) {
+            messageEntries.push({
+                id: 'tavern_role_chat',
+                title: '场外对话记录',
+                category: '记忆',
+                role: 'system',
+                content: tavernRoleChatPrompt
+            });
+        }
     } else {
         const latestUserInputRole: 有序消息角色 = 'assistant';
         const pushEntry = (
@@ -289,6 +300,9 @@ export const 构建主剧情请求参数 = (
         pushEntry('state_tasks', '任务列表', '系统', 'system', params.builtContext.contextPieces.任务状态);
         pushEntry('state_agreements', '约定列表', '系统', 'system', params.builtContext.contextPieces.约定状态);
         pushEntry('memory_short', '短期记忆', '记忆', 'system', params.builtContext.shortMemoryContext);
+
+        // 场外对话（侧聊）暂存原文：紧贴短期记忆之后注入，主回合负责把对话写进正文并同步状态。
+        pushEntry('role_chat', '场外对话记录', '记忆', 'system', params.场外对话提示 || '');
 
         pushEntry('script', '即时剧情回顾', '历史', 'system', scriptSectionText);
         pushEntry('style_assistant', '剧情风格助手消息', '系统', 'system', styleAssistantPrompt);

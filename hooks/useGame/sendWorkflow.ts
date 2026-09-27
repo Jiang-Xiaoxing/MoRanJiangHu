@@ -2,7 +2,7 @@ import * as textAIService from '../../services/ai/text';
 import { 是否流式连接中断错误消息 } from '../../services/ai/chatCompletionClient';
 import { recordAiParseFailureDiagnostic } from '../../services/diagnosticContext';
 import { recordDiagnosticLog } from '../../services/diagnosticLog';
-import type { GameResponse, OpeningConfig, 聊天记录结构, 记忆系统结构, 角色数据结构, 剧情系统结构, 剧情规划结构, 女主剧情规划结构, 同人剧情规划结构, 同人女主剧情规划结构, 世界书结构, 内置提示词条目结构, 叙事状态结构, 叙事平静值配置结构 } from '../../types';
+import type { GameResponse, OpeningConfig, 聊天记录结构, 场外对话消息结构, 记忆系统结构, 角色数据结构, 剧情系统结构, 剧情规划结构, 女主剧情规划结构, 同人剧情规划结构, 同人女主剧情规划结构, 世界书结构, 内置提示词条目结构, 叙事状态结构, 叙事平静值配置结构 } from '../../types';
 import { 获取主剧情接口配置, 获取剧情回忆接口配置, 获取文章优化接口配置, 获取变量计算接口配置, 获取世界演变接口配置, 获取规划分析接口配置, 获取地图自动更新接口配置, 接口配置是否可用, 变量校准功能已启用 as 变量生成功能已启用 } from '../../utils/apiConfig';
 import { 规范化游戏设置 } from '../../utils/gameSettings';
 import { 获取游玩请求超时毫秒 } from '../../utils/gameRequestTimeouts';
@@ -15,6 +15,7 @@ import { 构建主剧情请求参数, type 主剧情系统上下文 } from './ma
 import { 环境时间转标准串 } from './timeUtils';
 import { formatHistoryToScript } from './historyUtils';
 import { 酒馆预设模式可用 } from './promptRuntime';
+import { 构建场外对话记录块 } from './roleChatWorkflow';
 import { 检测文章优化协议确认污染 } from './bodyPolish';
 import { 分析世界到期触发 } from './worldEvolutionUtils';
 import { 按世界演变分流净化响应 } from './storyResponseGuards';
@@ -1182,6 +1183,7 @@ export type 发送结果 = {
 
 type 主剧情发送当前状态 = {
     历史记录: 聊天记录结构[];
+    场外对话?: 场外对话消息结构[];
     记忆系统: 记忆系统结构;
     角色: 角色数据结构;
     环境: any;
@@ -1222,6 +1224,7 @@ type 主剧情发送依赖 = {
     设置历史记录: (value: 聊天记录结构[] | ((prev: 聊天记录结构[]) => 聊天记录结构[])) => void;
     设置叙事平静值: (value: 叙事状态结构) => void;
     应用并同步记忆系统: (memory: 记忆系统结构, options?: { 静默总结提示?: boolean }) => void;
+    清空场外对话暂存?: () => void;
     构建系统提示词: (promptPool: any[], memoryData: 记忆系统结构, socialData: any[], statePayload: any, options?: any) => Promise<主剧情系统上下文 & {
         runtimePromptStates: Record<string, any>;
     }> | (主剧情系统上下文 & {
@@ -1630,7 +1633,8 @@ export const 执行主剧情发送工作流 = async (
             同人剧情规划: deps.深拷贝(currentState.同人剧情规划),
             同人女主剧情规划: deps.深拷贝(currentState.同人女主剧情规划),
             记忆系统: deps.深拷贝(memBeforeSend),
-            叙事平静值: deps.深拷贝(currentState.叙事平静值 || { 平静计数: 0, 情节事件记录: [] })
+            叙事平静值: deps.深拷贝(currentState.叙事平静值 || { 平静计数: 0, 情节事件记录: [] }),
+            场外对话: deps.深拷贝(currentState.场外对话 || [])
         },
         回档前持久态: {
             视觉设置: deps.深拷贝(currentState.visualConfig),
@@ -1759,6 +1763,8 @@ export const 执行主剧情发送工作流 = async (
 
     try {
         const recallContextActiveForMain = recallFeatureEnabled && Boolean(recallTag);
+        // 场外对话（侧聊）暂存原文：主回合成功吸收后由 deps.清空场外对话暂存 清空。
+        const 场外对话提示块 = 构建场外对话记录块(currentState.场外对话);
         const builtContext = await deps.构建系统提示词(
             currentState.prompts,
             updatedMemSys,
@@ -1823,6 +1829,7 @@ export const 执行主剧情发送工作流 = async (
             updatedMemSys,
             sendInput,
             recallTag,
+            场外对话提示: 场外对话提示块 || undefined,
             novelDecompositionPrompt: await 获取激活小说拆分注入文本(
                 currentState.apiConfig,
                 'main_story',
@@ -2359,6 +2366,8 @@ export const 执行主剧情发送工作流 = async (
             }
         );
         deps.应用并同步记忆系统(nextMemory);
+        // 主回合已成功落地（记忆已写入）：暂存的场外对话由本回合正文吸收，至此清空。
+        deps.清空场外对话暂存?.();
 
         const newAiMsg: 聊天记录结构 = {
             role: "assistant",
