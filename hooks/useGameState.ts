@@ -3,6 +3,7 @@ import {
     角色数据结构,
     环境信息结构, 
     聊天记录结构, 
+    场外对话消息结构,
     接口设置结构,
     提示词结构,
     ThemePreset,
@@ -190,6 +191,7 @@ export const useGameState = () => {
     });
 
     const [历史记录, 设置历史记录] = useState<聊天记录结构[]>([]);
+    const [场外对话, 设置场外对话] = useState<场外对话消息结构[]>([]);
     const [loading, setLoading] = useState(false);
     
     const [worldEvents, setWorldEvents] = useState<string[]>([]);
@@ -211,11 +213,12 @@ export const useGameState = () => {
     const [showStory, setShowStory] = useState(false);
     const [showHeroinePlan, setShowHeroinePlan] = useState(false);
     const [showMemory, setShowMemory] = useState(false);
+    const [showRoleChat, setShowRoleChat] = useState(false);
     
     // Save/Load Modal
     const [showSaveLoad, setShowSaveLoad] = useState<{ show: boolean, mode: 'save' | 'load' }>({ show: false, mode: 'save' });
 
-    const [activeTab, setActiveTab] = useState<'api' | 'workflow_graph' | 'image_generation' | 'recall' | 'memory_summary_model' | 'memory_refine_model' | 'map_model' | 'polish' | 'world_evolution' | 'variable_model' | 'planning_model' | 'independent_api_gpt' | 'novel_decomposition' | 'novel_decomposition_runtime' | 'prompt' | 'storage' | 'theme' | 'visual' | 'world' | 'game' | 'reality' | 'tavern_preset' | 'memory' | 'history' | 'context' | 'logs' | 'music' | 'npc_management' | 'variable_manager'>('api');
+    const [activeTab, setActiveTab] = useState<'api' | 'workflow_graph' | 'image_generation' | 'recall' | 'memory_summary_model' | 'memory_refine_model' | 'map_model' | 'polish' | 'role_chat' | 'world_evolution' | 'variable_model' | 'planning_model' | 'independent_api_gpt' | 'novel_decomposition' | 'novel_decomposition_runtime' | 'prompt' | 'storage' | 'theme' | 'visual' | 'world' | 'game' | 'reality' | 'tavern_preset' | 'memory' | 'history' | 'context' | 'logs' | 'music' | 'npc_management' | 'variable_manager'>('api');
     
     // Config State
     const [apiConfig, setApiConfig] = useState<接口设置结构>(() => 读取接口设置本地镜像() || 创建空接口设置());
@@ -420,6 +423,7 @@ export const useGameState = () => {
         开局配置, 设置开局配置,
         游戏初始时间, 设置游戏初始时间,
         历史记录, 设置历史记录,
+        场外对话, 设置场外对话,
         记忆系统, 设置记忆系统, 
         loading, setLoading,
         worldEvents, setWorldEvents,
@@ -439,6 +443,7 @@ export const useGameState = () => {
         showStory, setShowStory,
         showHeroinePlan, setShowHeroinePlan,
         showMemory, setShowMemory,
+        showRoleChat, setShowRoleChat,
         showSaveLoad, setShowSaveLoad, // New
         activeTab, setActiveTab,
         
