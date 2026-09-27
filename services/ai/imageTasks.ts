@@ -2259,12 +2259,15 @@ const 构建ComfyUI工作流 = (
         : hasConditioningZeroOut
             ? cleanedPrompt
             : 为不支持独立负面字段的模型附加负面提示词(cleanedPrompt, negativePrompt);
+    // krea2（Moody Krea2 Mix，CLIPLoader type "krea2"）：照抄工作流作者配方 8 步/cfg 1/euler/simple。
+    // 不能落进 qwen 分支（20 步/cfg 2.5）：会烤出噪点，且 8GB 低显存下耗时翻倍。
+    const isKrea2Workflow = /krea2/i.test(workflowText || '');
     const isZImageTurboWorkflow = /zImageTurbo|z-image|Mystic-XXX-ZIT|mPMix_NSFW_V9_fp8|qwen_3_4b\.safetensors|qwen-image-2512-Q6_K|res_multistep|sgm_uniform/i.test(workflowText || '');
     const isQwenImageWorkflow = /qwen_image_fp8_e4m3fn|qwen_2\.5_vl_7b_fp8_scaled|qwen_image_vae/i.test(workflowText || '');
-    const defaultSteps = isZImageTurboWorkflow ? 9 : (isQwenImageWorkflow ? 20 : 28);
-    const defaultCfg = isZImageTurboWorkflow ? 1 : (isQwenImageWorkflow ? 2.5 : 7);
-    const defaultSampler = isZImageTurboWorkflow ? 'res_multistep' : 'euler';
-    const defaultScheduler = isZImageTurboWorkflow ? 'sgm_uniform' : (isQwenImageWorkflow ? 'simple' : 'normal');
+    const defaultSteps = isKrea2Workflow ? 8 : (isZImageTurboWorkflow ? 9 : (isQwenImageWorkflow ? 20 : 28));
+    const defaultCfg = isKrea2Workflow ? 1 : (isZImageTurboWorkflow ? 1 : (isQwenImageWorkflow ? 2.5 : 7));
+    const defaultSampler = isKrea2Workflow ? 'euler' : (isZImageTurboWorkflow ? 'res_multistep' : 'euler');
+    const defaultScheduler = isKrea2Workflow ? 'simple' : (isZImageTurboWorkflow ? 'sgm_uniform' : (isQwenImageWorkflow ? 'simple' : 'normal'));
     const 显式随机种子 = Number.isFinite(Number(pngParams?.随机种子))
         ? Math.max(0, Math.floor(Number(pngParams?.随机种子)))
         : null;
@@ -2441,7 +2444,9 @@ const 附加生图调试链路到错误 = (error: any, trace: 生图调试事件
     throw error;
 };
 
-const COMFYUI_POLL_TIMEOUT_MS = 3 * 60 * 1000;
+// 低显存设备跑 nvfp4/fp8 级大模型会走流式分块加载，1024 图常需 2~5 分钟、更大图更久，
+// 3 分钟上限会把仍在正常生成的任务误判为失败。
+const COMFYUI_POLL_TIMEOUT_MS = 10 * 60 * 1000;
 
 const 提取ComfyUI历史根节点 = (historyPayload: any, promptId?: string): any => {
     if (!historyPayload || typeof historyPayload !== 'object') return null;
