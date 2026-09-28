@@ -38,6 +38,7 @@ const RoleChatModelSettings: React.FC<Props> = ({ settings, onSave }) => {
     const 独立模型开启 = Boolean(form.功能模型占位.角色对话独立模型开关);
     const 独立API地址 = (form.功能模型占位.角色对话API地址 || '').trim();
     const 独立API密钥 = (form.功能模型占位.角色对话API密钥 || '').trim();
+    const 群聊开启 = Boolean(form.功能模型占位.角色对话群聊开关);
 
     const updatePlaceholder = <K extends keyof 功能模型占位配置结构>(key: K, value: 功能模型占位配置结构[K]) => {
         setForm(prev => ({
@@ -145,7 +146,7 @@ const RoleChatModelSettings: React.FC<Props> = ({ settings, onSave }) => {
 
             <div className="rounded-md border border-wuxia-gold/20 bg-black/25 p-4 space-y-4">
                 <div className="text-[11px] text-gray-400 leading-relaxed">
-                    「角色对话」是主输入框旁的场外侧聊：选一名在场 NPC，由这个独立模型专门扮演他与你对话。
+                    「角色对话」是主输入框旁的场外侧聊：可以与一名附近 NPC 私聊，也可以勾选多名附近 NPC 群聊。
                     对话不进正文、不耗时间；暂存的对话会在你下次提交行动时打包注入主剧情，主回合成功后自动清空。
                     独立模型是硬前提——不开启时侧聊面板只显示引导，不会回退到主剧情模型。
                 </div>
@@ -213,6 +214,57 @@ const RoleChatModelSettings: React.FC<Props> = ({ settings, onSave }) => {
                         当前状态：角色对话未启用（面板将显示配置引导）
                     </div>
                 )}
+            </div>
+
+            <div className="rounded-md border border-wuxia-gold/20 bg-black/20 p-4 space-y-4">
+                <div className="text-xs text-wuxia-gold font-bold">群聊与显示</div>
+                <label className="flex items-center justify-between gap-3 text-xs text-gray-300">
+                    <span>开启多人群聊</span>
+                    <ToggleSwitch
+                        checked={群聊开启}
+                        onChange={(checked) => updatePlaceholder('角色对话群聊开关', checked)}
+                        ariaLabel="切换多人群聊"
+                    />
+                </label>
+                <div className="text-[11px] text-amber-200/80 leading-relaxed">
+                    群聊中的每次角色发言会分别调用所选模型。自动接话次数越多，通常等待越久、费用越高；缓存优惠取决于接口，无法保证。
+                </div>
+                <label className="block space-y-1 text-xs text-gray-300">
+                    <span>每次玩家发言后的自动接话上限：{form.功能模型占位.角色对话群聊自动回复上限}</span>
+                    <input
+                        type="range"
+                        min={1}
+                        max={6}
+                        value={form.功能模型占位.角色对话群聊自动回复上限}
+                        onChange={(e) => updatePlaceholder('角色对话群聊自动回复上限', Number(e.target.value))}
+                        disabled={!群聊开启}
+                        className="w-full accent-amber-500"
+                    />
+                </label>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <label className="space-y-1 text-xs text-gray-300">
+                        <span>单聊气泡</span>
+                        <select
+                            value={form.功能模型占位.角色对话单聊气泡样式}
+                            onChange={(e) => updatePlaceholder('角色对话单聊气泡样式', e.target.value as 'single' | 'split')}
+                            className="w-full bg-black/50 border border-gray-700 p-2 text-white rounded-md"
+                        >
+                            <option value="single">整段显示</option>
+                            <option value="split">按段落分气泡</option>
+                        </select>
+                    </label>
+                    <label className="space-y-1 text-xs text-gray-300">
+                        <span>群聊气泡</span>
+                        <select
+                            value={form.功能模型占位.角色对话群聊气泡样式}
+                            onChange={(e) => updatePlaceholder('角色对话群聊气泡样式', e.target.value as 'single' | 'split')}
+                            className="w-full bg-black/50 border border-gray-700 p-2 text-white rounded-md"
+                        >
+                            <option value="split">按段落分气泡</option>
+                            <option value="single">整段显示</option>
+                        </select>
+                    </label>
+                </div>
             </div>
 
             <div className="rounded-md border border-wuxia-cyan/25 bg-black/20 p-4 space-y-3">

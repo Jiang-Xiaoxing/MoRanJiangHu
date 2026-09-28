@@ -400,7 +400,7 @@ export const 清理角色对话输出 = (rawText: string): string => {
         .trim();
 };
 
-export const generateRoleChatReply = async (
+export const generateRoleChatRawReply = async (
     messages: 通用消息[],
     apiConfig: 当前可用接口结构,
     options?: {
@@ -421,6 +421,19 @@ export const generateRoleChatReply = async (
         streamOptions: options?.streamOptions,
         errorDetailLimit: Number.POSITIVE_INFINITY
     });
+    return raw;
+};
+
+export const generateRoleChatReply = async (
+    messages: 通用消息[],
+    apiConfig: 当前可用接口结构,
+    options?: {
+        signal?: AbortSignal;
+        streamOptions?: WorldStreamOptions;
+        temperature?: number;
+    }
+): Promise<string> => {
+    const raw = await generateRoleChatRawReply(messages, apiConfig, options);
     return 清理角色对话输出(raw);
 };
 

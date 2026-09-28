@@ -22,6 +22,7 @@ import {
     同人女主剧情规划结构,
     OpeningConfig,
     NPC结构,
+    场外对话消息结构,
     场景图片档案,
     场景生图任务记录,
     NPC生图任务记录,
@@ -59,6 +60,7 @@ import {
 import { 执行主剧情发送工作流, 提取自动重试原因文本 } from './useGame/sendWorkflow';
 import { 执行正文润色 as 执行正文润色工作流 } from './useGame/bodyPolish';
 import { 执行角色对话 as 执行角色对话工作流, 构建场外对话记录块, 规范化场外对话列表 } from './useGame/roleChatWorkflow';
+import { 执行角色群聊 as 执行角色群聊工作流 } from './useGame/groupRoleChatWorkflow';
 import { 构建上下文快照数据 } from './useGame/contextSnapshot';
 import { 执行响应命令处理 } from './useGame/responseCommandProcessor';
 import { 创建会话生命周期工作流 } from './useGame/sessionLifecycleWorkflow';
@@ -484,6 +486,26 @@ export const useGame = () => {
     const [最近开局配置, 设置最近开局配置] = useState<最近开局配置结构 | null>(null);
     const apiConfigRef = useRef(apiConfig);
     const 社交Ref = useRef<any[]>(Array.isArray(社交) ? 社交 : []);
+    const 场外对话Ref = useRef<场外对话消息结构[]>(Array.isArray(场外对话) ? 场外对话 : []);
+    const 角色对话AbortControllerRef = useRef<AbortController | null>(null);
+    const 角色对话请求版本Ref = useRef(0);
+    const 中止角色对话底层 = (discardResult: boolean) => {
+        if (discardResult) 角色对话请求版本Ref.current += 1;
+        const controller = 角色对话AbortControllerRef.current;
+        角色对话AbortControllerRef.current = null;
+        if (controller && !controller.signal.aborted) {
+            controller.abort(new DOMException('角色对话已停止', 'AbortError'));
+        }
+    };
+    const 替换场外对话 = (value: 场外对话消息结构[]) => {
+        中止角色对话底层(true);
+        const normalized = 规范化场外对话列表(value);
+        场外对话Ref.current = normalized;
+        设置场外对话(normalized);
+    };
+    useEffect(() => {
+        场外对话Ref.current = Array.isArray(场外对话) ? 场外对话 : [];
+    }, [场外对话]);
     // [致命修复] 包装 设置社交：同步更新 社交Ref.current，避免异步 useEffect 延迟
     // 导致 图片档案工作流 读取到旧的社交列表，丢失已写入的香闺秘档部位档案。
     // 关键：必须在调用 设置社交 之前同步更新 社交Ref.current，
@@ -986,7 +1008,7 @@ export const useGame = () => {
         设置同人女主剧情规划(规范化同人女主剧情规划状态(深拷贝(snapshot.回档前状态.同人女主剧情规划)));
         应用并同步记忆系统(深拷贝(snapshot.回档前状态.记忆系统));
         设置叙事平静值(深拷贝(snapshot.回档前状态.叙事平静值 || { 平静计数: 0, 情节事件记录: [] }));
-        设置场外对话(规范化场外对话列表(深拷贝(snapshot.回档前状态.场外对话)));
+        替换场外对话(深拷贝(snapshot.回档前状态.场外对话));
         // [修复] 快照携带提示词池/世界书时一并回滚并持久化，
         // 防止上一局 AI 写入的 core_world/core_realm/core_cot 污染重 roll 后的生成
         if (Array.isArray(snapshot.回档前提示词池) && snapshot.回档前提示词池.length > 0) {
@@ -2954,40 +2976,116 @@ export const useGame = () => {
         options
     );
 
+    const 终止当前角色对话 = (discardResult = true) => {
+        中止角色对话底层(discardResult);
+    };
+
+    const 创建角色对话请求 = (externalSignal?: AbortSignal) => {
+        终止当前角色对话(true);
+        const controller = new AbortController();
+        const version = 角色对话请求版本Ref.current;
+        角色对话AbortControllerRef.current = controller;
+        if (externalSignal) {
+            if (externalSignal.aborted) controller.abort(externalSignal.reason);
+            else externalSignal.addEventListener('abort', () => controller.abort(externalSignal.reason), { once: true });
+        }
+        return { controller, version };
+    };
+
+    const 追加场外对话 = (messages: 场外对话消息结构[]) => {
+        if (messages.length === 0) return;
+        设置场外对话((prev) => {
+            const next = [...(Array.isArray(prev) ? prev : []), ...messages];
+            场外对话Ref.current = next;
+            return next;
+        });
+    };
+
     // 「角色对话」侧聊：独立模型扮演单名 NPC；成功后把一问一答追加进暂存，等下一次主回合打包注入。
     const 执行角色对话请求 = async (
         params: {
             npcId?: string;
             npcName?: string;
             玩家输入: string;
+            已确认位置?: boolean;
             signal?: AbortSignal;
             onDelta?: (delta: string, accumulated: string) => void;
         }
     ): Promise<{ reply: string; npcName: string }> => {
-        const result = await 执行角色对话工作流(
-            {
-                apiConfig,
-                社交,
-                环境,
-                角色,
-                历史记录,
-                memoryConfig,
-                prompts
-            },
-            {
-                npcId: params.npcId,
-                npcName: params.npcName,
-                玩家输入: params.玩家输入,
-                暂存对话: 场外对话,
-                signal: params.signal,
-                onDelta: params.onDelta
-            }
-        );
-        设置场外对话((prev) => [...(Array.isArray(prev) ? prev : []), ...result.新增消息]);
-        return { reply: result.reply, npcName: result.npcName };
+        const request = 创建角色对话请求(params.signal);
+        try {
+            const result = await 执行角色对话工作流(
+                {
+                    apiConfig,
+                    社交,
+                    环境,
+                    角色,
+                    历史记录,
+                    memoryConfig,
+                    prompts
+                },
+                {
+                    npcId: params.npcId,
+                    npcName: params.npcName,
+                    玩家输入: params.玩家输入,
+                    暂存对话: 场外对话Ref.current,
+                    已确认位置: params.已确认位置,
+                    signal: request.controller.signal,
+                    onDelta: (delta, accumulated) => {
+                        if (request.version === 角色对话请求版本Ref.current) params.onDelta?.(delta, accumulated);
+                    }
+                }
+            );
+            if (request.version !== 角色对话请求版本Ref.current) throw new DOMException('角色对话结果已失效', 'AbortError');
+            追加场外对话(result.新增消息);
+            return { reply: result.reply, npcName: result.npcName };
+        } finally {
+            if (角色对话AbortControllerRef.current === request.controller) 角色对话AbortControllerRef.current = null;
+        }
     };
 
-    const 清空场外对话暂存 = () => 设置场外对话([]);
+    const 执行角色群聊请求 = async (params: {
+        参与者NPCIds: string[];
+        玩家输入: string;
+        继续群聊?: boolean;
+        首位NPCId?: string;
+        群聊ID?: string;
+        自动回复上限?: number;
+        已确认全部位置?: boolean;
+        signal?: AbortSignal;
+        onTurnDelta?: (payload: { npcId: string; npcName: string; text: string }) => void;
+        onTurnComplete?: (payload: { message: 场外对话消息结构; turnIndex: number }) => void;
+        shouldStopAfterTurn?: () => boolean;
+    }) => {
+        const request = 创建角色对话请求(params.signal);
+        try {
+            const result = await 执行角色群聊工作流(
+                { apiConfig, 社交, 环境, 角色, 历史记录, memoryConfig, prompts },
+                {
+                    ...params,
+                    暂存对话: 场外对话Ref.current,
+                    signal: request.controller.signal,
+                    onTurnDelta: (payload) => {
+                        if (request.version === 角色对话请求版本Ref.current) params.onTurnDelta?.(payload);
+                    },
+                    onTurnComplete: (payload) => {
+                        if (request.version === 角色对话请求版本Ref.current) params.onTurnComplete?.(payload);
+                    }
+                }
+            );
+            if (request.version !== 角色对话请求版本Ref.current) throw new DOMException('角色群聊结果已失效', 'AbortError');
+            追加场外对话(result.新增消息);
+            return result;
+        } finally {
+            if (角色对话AbortControllerRef.current === request.controller) 角色对话AbortControllerRef.current = null;
+        }
+    };
+
+    const 清空场外对话暂存 = () => {
+        终止当前角色对话(true);
+        场外对话Ref.current = [];
+        设置场外对话([]);
+    };
 
     const 规范化剧情规划状态 = (raw?: any): 剧情规划结构 => 基础规范化剧情规划状态(raw);
     const 规范化女主剧情规划状态 = (raw?: any): 女主剧情规划结构 | undefined => 基础规范化女主剧情规划状态(raw);
@@ -3102,7 +3200,7 @@ export const useGame = () => {
         设置同人女主剧情规划(openingBase.同人女主剧情规划);
         应用并同步记忆系统(创建空记忆系统(), { 静默总结提示: true });
         设置历史记录([]);
-        设置场外对话([]);
+        替换场外对话([]);
         清空变量生成上下文缓存();
         setWorldEvents([]);
     };
@@ -3641,6 +3739,8 @@ export const useGame = () => {
         isStreaming: boolean = true,
         options?: 发送选项
     ): Promise<发送结果> => {
+        // 主行动优先：先使正在进行的侧聊结果失效，避免迟到回复落入本次主回合快照。
+        终止当前角色对话(true);
         set开局主剧情进度(null);
         set开局文章优化进度(null);
         set开局变量生成进度(null);
@@ -3656,7 +3756,7 @@ export const useGame = () => {
             isStreaming,
             {
                 历史记录,
-                场外对话,
+                场外对话: 场外对话Ref.current,
                 记忆系统,
                 角色,
                 环境,
@@ -3921,7 +4021,7 @@ export const useGame = () => {
          设置提示词池: setPrompts,
          设置历史记录,
          设置叙事平静值,
-         设置场外对话,
+         设置场外对话: 替换场外对话,
          清空重Roll快照,
         推入重Roll快照,
         重置自动存档状态,
@@ -4344,6 +4444,9 @@ export const useGame = () => {
             handleRetryLatestStage,
             handlePolishTurn,
             handleRoleChatSend: 执行角色对话请求,
+            handleGroupRoleChatSend: 执行角色群聊请求,
+            stopRoleChat: () => 终止当前角色对话(false),
+            discardRoleChat: () => 终止当前角色对话(true),
             清空场外对话暂存,
             handleRecoverFromParseErrorRaw,
             saveSettings, saveVisualSettings, saveImageManagerSettings, saveGameSettings, saveMemorySettings,
