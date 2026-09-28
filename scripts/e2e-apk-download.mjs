@@ -7,7 +7,10 @@ const targetUrl = process.argv[2] || 'http://127.0.0.1:4173/';
 const expectedVersion = process.argv[3] || '';
 const shouldMockDownload = process.argv.includes('--mock-apk');
 const minApkBytesArg = process.argv.find((arg) => arg.startsWith('--min-apk-bytes='));
-const minApkBytes = Number(minApkBytesArg?.split('=')[1] || (shouldMockDownload ? 16 : 10 * 1024 * 1024));
+// 阈值只需拦掉「返回 HTML 报错页」这类明显异常，不能高于真实产物体积。
+// APK 自 v1.0.6xx 起在构建时裁剪 item-presets / auction-items（改由站点远程 URL 提供），
+// 体积稳定在 ~5.9MB；原先写死 10MB 会把正常产物误判为失败（v1.0.669/1.0.670 均已复现）。
+const minApkBytes = Number(minApkBytesArg?.split('=')[1] || (shouldMockDownload ? 16 : 1 * 1024 * 1024));
 
 const browser = await chromium.launch({ headless: true });
 const context = await browser.newContext({
