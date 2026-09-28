@@ -825,7 +825,7 @@ const LandingPage: React.FC<Props> = ({
                                 本版本的部分功能、设置项和本地数据结构可能与原版或其他二创版本不同，跨版本导入存档/设置前请务必备份；不同版本之间可能不兼容。
                             </div>
                             <div className="mt-3 border-t border-amber-300/25 pt-3 text-xs leading-6 text-amber-100/90 md:text-sm">
-                                共创者：Ling、NullUserSIe、( ఠൠఠ )、倒挂的梦
+                                共创者：Ling、NullUserSIe、( ఠൠఠ )、倒挂的梦、Jiang-Xiaoxing
                             </div>
                         </div>
                     </div>
