@@ -4,6 +4,7 @@ import type {
     GameResponse,
     存档结构,
     聊天记录结构,
+    场外对话消息结构,
     环境信息结构,
     角色数据结构,
     提示词结构,
@@ -43,6 +44,7 @@ import { 计算历史游玩回合数 } from '../../utils/saveTurn';
 import { 修复旧姓名库误改NPC姓名列表 } from '../../utils/npcNameRepair';
 import { 修复开局伙伴社交列表 } from '../../utils/openingCompanion';
 import { 同步角色与门派状态 } from './storyState';
+import { 规范化场外对话列表 } from './roleChatWorkflow';
 
 const 收集图床图片地址 = (
     value: unknown,
@@ -115,6 +117,7 @@ const 后台缓存当前存档图床图片 = (save: 存档结构): void => {
 
 export type 自动存档快照结构 = {
     history?: 聊天记录结构[];
+    场外对话?: 场外对话消息结构[];
     role?: 角色数据结构;
     env?: 环境信息结构;
     social?: any[];
@@ -139,6 +142,7 @@ export type 自动存档快照结构 = {
 
 type 存档协调当前状态 = {
     历史记录: 聊天记录结构[];
+    场外对话?: 场外对话消息结构[];
     角色: 角色数据结构;
     环境: 环境信息结构;
     社交: any[];
@@ -223,6 +227,7 @@ type 存档协调依赖 = {
     设置提示词池: (value: 提示词结构[]) => void;
     设置历史记录: (value: 聊天记录结构[]) => void;
     设置叙事平静值: (value: 叙事状态结构) => void;
+    设置场外对话?: (value: 场外对话消息结构[]) => void;
     清空重Roll快照: () => void;
     推入重Roll快照?: (snapshot: {
         玩家输入: string;
@@ -716,7 +721,12 @@ export const 创建存档数据 = (
         角色锚点列表: deps.深拷贝(filteredCharacterAnchors.anchors),
         当前角色锚点ID: filteredCharacterAnchors.currentAnchorId,
         拍卖行: deps.深拷贝(auctionHouseSource),
-        叙事平静值: deps.深拷贝(snapshot?.叙事平静值 || currentState.叙事平静值 || { 平静计数: 0, 情节事件记录: [] })
+        叙事平静值: deps.深拷贝(snapshot?.叙事平静值 || currentState.叙事平静值 || { 平静计数: 0, 情节事件记录: [] }),
+        场外对话: 规范化场外对话列表(deps.深拷贝(
+            Array.isArray(snapshot?.场外对话)
+                ? snapshot.场外对话
+                : (Array.isArray(currentState.场外对话) ? currentState.场外对话 : [])
+        ))
     };
 };
 
@@ -989,6 +999,8 @@ export const 执行读取存档 = async (
     });
     deps.设置历史记录(loadedHistoryForState);
     trace('history.set.done');
+    // 场外对话（侧聊暂存）随存档恢复；旧存档没有该字段时按空数组处理（向后兼容）。
+    deps.设置场外对话?.(规范化场外对话列表(deps.深拷贝(Array.isArray((save as any).场外对话) ? (save as any).场外对话 : [])));
     deps.应用并同步记忆系统(loadedMemory, { 静默总结提示: true });
     deps.设置叙事平静值(save.叙事平静值 || { 平静计数: 0, 情节事件记录: [] });
     trace('memory.set.done', {

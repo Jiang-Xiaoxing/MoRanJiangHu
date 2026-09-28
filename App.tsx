@@ -13,7 +13,7 @@ import { ModalErrorBoundary } from './components/ui/ModalErrorBoundary';
 import { useGame } from './hooks/useGame';
 import { use图片资源回源预取 } from './hooks/useImageAssetPrefetch';
 import { normalizeCanonicalGameTime, 环境时间转标准串 } from './hooks/useGame/timeUtils';
-import { 获取主剧情接口配置, 获取文生图接口配置, 获取生图词组转化器接口配置, 获取记忆精炼接口配置, 接口配置是否可用, 获取变量计算接口配置, 变量校准功能已启用 as 变量生成功能已启用 } from './utils/apiConfig';
+import { 获取主剧情接口配置, 获取文生图接口配置, 获取生图词组转化器接口配置, 获取记忆精炼接口配置, 获取角色对话接口配置, 接口配置是否可用, 获取变量计算接口配置, 变量校准功能已启用 as 变量生成功能已启用 } from './utils/apiConfig';
 import { 请求模型文本 } from './services/ai/chatCompletionClient';
 import { 记忆精炼系统提示词 } from './prompts/runtime/memoryRefine';
 import { 获取内置世界书槽位内容 } from './utils/worldbook';
@@ -349,6 +349,7 @@ const NovelExportModal = 创建可预加载懒组件('novel-export-modal', () =>
 const MemoryModal = 创建可预加载懒组件('memory-modal', () => import('./components/features/Memory/MemoryModal'));
 const MobileMemory = 创建可预加载懒组件('mobile-memory', () => import('./components/features/Memory/MobileMemory'));
 const MemorySummaryFlowModal = 创建可预加载懒组件('memory-summary-flow-modal', () => import('./components/features/Memory/MemorySummaryFlowModal'));
+const RoleChatModal = 创建可预加载懒组件('role-chat-modal', () => import('./components/features/Chat/RoleChatModal'));
 const MemorySummaryFlowMobileModal = 创建可预加载懒组件('mobile-memory-summary-flow-modal', () => import('./components/features/Memory/MemorySummaryFlowMobileModal'));
 const NpcMemorySummaryFlowModal = 创建可预加载懒组件('npc-memory-summary-flow-modal', () => import('./components/features/Memory/NpcMemorySummaryFlowModal'));
 const NpcMemorySummaryFlowMobileModal = 创建可预加载懒组件('mobile-npc-memory-summary-flow-modal', () => import('./components/features/Memory/NpcMemorySummaryFlowMobileModal'));
@@ -1722,6 +1723,11 @@ const App: React.FC = () => {
             modelName: String(config?.model || '未选择模型').trim()
         };
     }, [state.apiConfig]);
+    // 「角色对话」侧聊：独立模型是硬前提，未配齐时面板只显示引导
+    const 角色对话配置就绪 = React.useMemo(
+        () => 接口配置是否可用(获取角色对话接口配置(state.apiConfig)),
+        [state.apiConfig]
+    );
     const mainStoryApiLabel = `主剧情：${mainStoryApiInfo.channelName} / ${mainStoryApiInfo.modelName}`;
     const tavernPresetStatus = React.useMemo(() => {
         const config = state.gameConfig;
@@ -3302,6 +3308,7 @@ const App: React.FC = () => {
                                     onRegenerate={actions.handleRegenerate}
                                     onRecoverParseErrorRaw={actions.handleRecoverFromParseErrorRaw}
                                     onQuickRestart={actions.handleQuickRestart}
+                                    onOpenRoleChat={() => setters.setShowRoleChat(true)}
                                     requestConfirm={requestConfirm}
                                     loading={state.loading} 
                                     variableGenerationRunning={meta.variableGenerationRunning}
@@ -4524,6 +4531,26 @@ const App: React.FC = () => {
                                     onStartMemorySummary={actions.handleStartManualMemorySummary}
                                 />
                             )}
+                        </懒加载边界>
+                    )}
+
+                    {state.showRoleChat && (
+                        <懒加载边界>
+                            <RoleChatModal
+                                open={true}
+                                loading={state.loading}
+                                社交列表={state.社交}
+                                场外对话={state.场外对话 || []}
+                                配置就绪={角色对话配置就绪}
+                                onSend={(params) => actions.handleRoleChatSend(params)}
+                                onClear={() => actions.清空场外对话暂存()}
+                                onClose={() => setters.setShowRoleChat(false)}
+                                onOpenSettings={() => {
+                                    setters.setActiveTab('role_chat');
+                                    setters.setShowSettings(true);
+                                    setters.setShowRoleChat(false);
+                                }}
+                            />
                         </懒加载边界>
                     )}
                 </div>

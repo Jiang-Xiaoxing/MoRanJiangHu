@@ -58,6 +58,7 @@ import {
 } from './useGame/memoryUtils';
 import { 执行主剧情发送工作流, 提取自动重试原因文本 } from './useGame/sendWorkflow';
 import { 执行正文润色 as 执行正文润色工作流 } from './useGame/bodyPolish';
+import { 执行角色对话 as 执行角色对话工作流, 构建场外对话记录块, 规范化场外对话列表 } from './useGame/roleChatWorkflow';
 import { 构建上下文快照数据 } from './useGame/contextSnapshot';
 import { 执行响应命令处理 } from './useGame/responseCommandProcessor';
 import { 创建会话生命周期工作流 } from './useGame/sessionLifecycleWorkflow';
@@ -439,6 +440,7 @@ export const useGame = () => {
         开局配置, 设置开局配置,
         游戏初始时间, 设置游戏初始时间,
         历史记录, 设置历史记录,
+        场外对话, 设置场外对话,
         记忆系统, 设置记忆系统,
         loading, setLoading,
         worldEvents, setWorldEvents,
@@ -457,6 +459,7 @@ export const useGame = () => {
         showAgreement, setShowAgreement,
         showStory, setShowStory,
         showHeroinePlan, setShowHeroinePlan,
+        showRoleChat, setShowRoleChat,
         showMemory, setShowMemory,
         showSaveLoad, setShowSaveLoad,
         activeTab, setActiveTab,
@@ -983,6 +986,7 @@ export const useGame = () => {
         设置同人女主剧情规划(规范化同人女主剧情规划状态(深拷贝(snapshot.回档前状态.同人女主剧情规划)));
         应用并同步记忆系统(深拷贝(snapshot.回档前状态.记忆系统));
         设置叙事平静值(深拷贝(snapshot.回档前状态.叙事平静值 || { 平静计数: 0, 情节事件记录: [] }));
+        设置场外对话(规范化场外对话列表(深拷贝(snapshot.回档前状态.场外对话)));
         // [修复] 快照携带提示词池/世界书时一并回滚并持久化，
         // 防止上一局 AI 写入的 core_world/core_realm/core_cot 污染重 roll 后的生成
         if (Array.isArray(snapshot.回档前提示词池) && snapshot.回档前提示词池.length > 0) {
@@ -2950,6 +2954,41 @@ export const useGame = () => {
         options
     );
 
+    // 「角色对话」侧聊：独立模型扮演单名 NPC；成功后把一问一答追加进暂存，等下一次主回合打包注入。
+    const 执行角色对话请求 = async (
+        params: {
+            npcId?: string;
+            npcName?: string;
+            玩家输入: string;
+            signal?: AbortSignal;
+            onDelta?: (delta: string, accumulated: string) => void;
+        }
+    ): Promise<{ reply: string; npcName: string }> => {
+        const result = await 执行角色对话工作流(
+            {
+                apiConfig,
+                社交,
+                环境,
+                角色,
+                历史记录,
+                memoryConfig,
+                prompts
+            },
+            {
+                npcId: params.npcId,
+                npcName: params.npcName,
+                玩家输入: params.玩家输入,
+                暂存对话: 场外对话,
+                signal: params.signal,
+                onDelta: params.onDelta
+            }
+        );
+        设置场外对话((prev) => [...(Array.isArray(prev) ? prev : []), ...result.新增消息]);
+        return { reply: result.reply, npcName: result.npcName };
+    };
+
+    const 清空场外对话暂存 = () => 设置场外对话([]);
+
     const 规范化剧情规划状态 = (raw?: any): 剧情规划结构 => 基础规范化剧情规划状态(raw);
     const 规范化女主剧情规划状态 = (raw?: any): 女主剧情规划结构 | undefined => 基础规范化女主剧情规划状态(raw);
     const 规范化同人剧情规划状态 = (raw?: any): 同人剧情规划结构 | undefined => 基础规范化同人剧情规划状态(raw);
@@ -3616,6 +3655,7 @@ export const useGame = () => {
             isStreaming,
             {
                 历史记录,
+                场外对话,
                 记忆系统,
                 角色,
                 环境,
@@ -3658,6 +3698,7 @@ export const useGame = () => {
                 构建系统提示词,
                 processResponseCommands,
                 performAutoSave,
+                清空场外对话暂存,
                 执行NPC变量自动备份: (socialSnapshot, options) => {
                     void 自动备份NPC变量(socialSnapshot, options).catch((error) => {
                         recordDiagnosticLog('warn', ['NPC变量自动备份失败', {
@@ -3785,6 +3826,7 @@ export const useGame = () => {
         自动存档最小间隔毫秒,
         深拷贝,
         历史记录,
+        场外对话,
         角色,
         环境,
         社交,
@@ -3875,10 +3917,11 @@ export const useGame = () => {
         设置同人剧情规划,
         设置同人女主剧情规划,
         设置开局配置,
-        设置提示词池: setPrompts,
-        设置历史记录,
-        设置叙事平静值,
-        清空重Roll快照,
+         设置提示词池: setPrompts,
+         设置历史记录,
+         设置叙事平静值,
+         设置场外对话,
+         清空重Roll快照,
         推入重Roll快照,
         重置自动存档状态,
         切换生图存档作用域,
@@ -4284,6 +4327,7 @@ export const useGame = () => {
         },
         setters: {
             setShowSettings, setShowInventory, setShowEquipment, setShowBattle, setShowSocial, setShowTeam, setShowKungfu, setShowSkills, setShowWorld, setShowMap, setShowSect, setShowTask, setShowAgreement, setShowStory, setShowHeroinePlan, setShowMemory, setShowSaveLoad,
+            setShowRoleChat,
             setActiveTab, setCurrentTheme,
             setApiConfig, setVisualConfig, setImageManagerConfig, setPrompts,
             setCharacter: 设置角色,
@@ -4298,6 +4342,8 @@ export const useGame = () => {
             handleRetryLatestVariableGeneration,
             handleRetryLatestStage,
             handlePolishTurn,
+            handleRoleChatSend: 执行角色对话请求,
+            清空场外对话暂存,
             handleRecoverFromParseErrorRaw,
             saveSettings, saveVisualSettings, saveImageManagerSettings, saveGameSettings, saveMemorySettings,
             saveBuiltinPromptEntries,

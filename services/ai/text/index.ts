@@ -12,6 +12,8 @@ export {
     generateMemoryRecall,
     generateFandomRealmData,
     generatePolishedBody,
+    generateRoleChatReply,
+    清理角色对话输出,
     generatePlanningAnalysis,
     generateNovelDecomposition,
     解析境界体系提示词内容,
