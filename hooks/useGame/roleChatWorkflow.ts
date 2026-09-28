@@ -7,9 +7,10 @@ import type {
 } from '../../types';
 import { 获取角色对话接口配置, 接口配置是否可用 } from '../../utils/apiConfig';
 import { 默认角色对话提示词, 默认场外对话注入指令 } from '../../prompts/runtime/defaults';
-import { generateRoleChatReply } from '../../services/ai/text';
+import { generateRoleChatReply, 清理角色对话输出 } from '../../services/ai/text';
 import { 规范化环境信息 } from './stateTransforms';
 import { 环境时间转标准串 } from './timeUtils';
+import { 判断角色对话位置 } from '../../utils/roleChatLocation';
 
 // 「角色对话」侧聊工作流。
 // 设计原则：注入的是“这一名角色的认知范围”，不是主剧情 AI 的全知视角——
@@ -37,6 +38,7 @@ export type 角色对话参数 = {
     npcName?: string;
     玩家输入: string;
     暂存对话?: 场外对话消息结构[];
+    已确认位置?: boolean;
     signal?: AbortSignal;
     onDelta?: (delta: string, accumulated: string) => void;
 };
@@ -60,8 +62,18 @@ export const 规范化场外对话列表 = (raw: unknown): 场外对话消息结
             if (!内容) return null;
             const role = item?.role === 'npc' ? 'npc' : 'player';
             const npcId = 取文本(item?.npcId);
+            const 会话类型 = item?.会话类型 === 'group' ? 'group' : item?.会话类型 === 'single' ? 'single' : undefined;
+            const 群聊ID = 取文本(item?.群聊ID);
+            const 听众NPCIds = Array.isArray(item?.听众NPCIds) ? item.听众NPCIds.map(取文本).filter(Boolean) : [];
+            const 听众 = Array.isArray(item?.听众) ? item.听众.map(取文本).filter(Boolean) : [];
+            const 完成状态 = item?.完成状态 === 'partial' ? 'partial' : item?.完成状态 === 'complete' ? 'complete' : undefined;
             return {
                 ...(npcId ? { npcId } : {}),
+                ...(会话类型 ? { 会话类型 } : {}),
+                ...(群聊ID ? { 群聊ID } : {}),
+                ...(听众NPCIds.length > 0 ? { 听众NPCIds: Array.from(new Set(听众NPCIds)) } : {}),
+                ...(听众.length > 0 ? { 听众: Array.from(new Set(听众)) } : {}),
+                ...(完成状态 ? { 完成状态 } : {}),
                 role,
                 发言人: 取文本(item?.发言人) || (role === 'npc' ? 'NPC' : '玩家'),
                 内容,
@@ -82,7 +94,13 @@ export const 构建场外对话记录块 = (
 ): string => {
     const list = 规范化场外对话列表(场外对话);
     if (list.length === 0) return '';
-    const lines = list.map((item) => `【${item.发言人}】${item.内容}`);
+    const lines = list.map((item) => {
+        const audience = item.会话类型 === 'group' && Array.isArray(item.听众) && item.听众.length > 0
+            ? `｜在场听众：${item.听众.join('、')}`
+            : '';
+        const partial = item.完成状态 === 'partial' ? '｜未说完' : '';
+        return `【${item.发言人}${audience}${partial}】${item.内容}`;
+    });
     return [options?.注入指令?.trim() || 默认场外对话注入指令, ...lines].join('\n');
 };
 
@@ -237,7 +255,7 @@ const 提取回合片段列表 = (历史记录: 聊天记录结构[]): 回合片
 };
 
 const 回合命中NPC = (round: 回合片段, npcName: string): boolean => {
-    if (round.玩家输入 && round.玩家输入.includes(npcName)) return true;
+    // 玩家只是在输入里提到姓名，并不能证明该 NPC 当时在场。
     return round.正文行.some((line) => line.includes(npcName));
 };
 
@@ -296,7 +314,7 @@ export const 序列化江湖常识 = (prompts?: 提示词结构[]): string => {
     return lines.join('\n');
 };
 
-const 解析目标NPC = (社交: any[], params: { npcId?: string; npcName?: string }): any | null => {
+export const 解析目标NPC = (社交: any[], params: { npcId?: string; npcName?: string }): any | null => {
     const list = Array.isArray(社交) ? 社交 : [];
     const id = 取文本(params.npcId);
     if (id) {
@@ -327,7 +345,11 @@ export const 构建角色对话消息序列 = (deps: 角色对话依赖, params:
     knowledgeBlocks.push(`## 你要扮演的角色\n${档案块}`);
     const 情境块 = 序列化当前情境(deps.环境);
     if (情境块) knowledgeBlocks.push(`## 当前情境\n${情境块}`);
-    knowledgeBlocks.push(`## 眼前的人\n${序列化眼前的人(deps.社交, deps.角色, npc)}`);
+    const 近处可见角色 = (Array.isArray(deps.社交) ? deps.社交 : []).filter(item => {
+        if (item === npc) return true;
+        return 判断角色对话位置(item, deps.环境).状态 === 'nearby';
+    });
+    knowledgeBlocks.push(`## 眼前的人\n${序列化眼前的人(近处可见角色, deps.角色, npc)}`);
     const 回顾块 = 提取亲历回顾(deps.历史记录, npcName, { memoryConfig: deps.memoryConfig });
     if (回顾块) knowledgeBlocks.push(`## 你亲历的近期经过\n${回顾块}`);
     const 常识块 = 序列化江湖常识(deps.prompts);
@@ -341,7 +363,7 @@ export const 构建角色对话消息序列 = (deps: 角色对话依赖, params:
     // 只回放「与当前这名 NPC」的对话：换人后另一人的私聊内容不得进入他的上下文。
     // 没有 npcId 的旧记录无法安全判定归属，一律不回放。
     const 暂存 = 规范化场外对话列表(params.暂存对话)
-        .filter((item) => Boolean(取文本(item.npcId)) && 取文本(item.npcId) === npcId)
+        .filter((item) => item.会话类型 !== 'group' && Boolean(取文本(item.npcId)) && 取文本(item.npcId) === npcId)
         .slice(-暂存消息回放上限);
     for (const item of 暂存) {
         messages.push({
@@ -364,7 +386,8 @@ const 创建超时错误 = (message: string): Error => {
 // task 自己因 abort 抛错，部分回复会被丢掉、甚至一直挂着。
 export const 执行角色对话请求带超时 = (
     task: (signal: AbortSignal, onDelta: (delta: string, accumulated: string) => void) => Promise<string>,
-    parentSignal?: AbortSignal
+    parentSignal?: AbortSignal,
+    options?: { 中断时保留部分?: boolean }
 ): Promise<string> => {
     return new Promise<string>((resolve, reject) => {
         const controller = new AbortController();
@@ -389,7 +412,8 @@ export const 执行角色对话请求带超时 = (
         };
         const handleParentAbort = () => {
             const reason = parentSignal?.reason ?? new DOMException('请求已取消', 'AbortError');
-            finish('reject', reason);
+            if (options?.中断时保留部分 === true && accumulated.trim().length > 0) finish('resolve', accumulated);
+            else finish('reject', reason);
             controller.abort(reason);
         };
         const handleTimeout = () => {
@@ -433,6 +457,11 @@ export const 执行角色对话 = async (deps: 角色对话依赖, params: 角�
     const npcId = 取目标NPC标识(npc);
     const 玩家输入 = 取文本(params.玩家输入);
     if (!玩家输入) throw new Error('输入内容为空。');
+    const locationCheck = 判断角色对话位置(npc, deps.环境);
+    if (!locationCheck.可选) throw new Error(locationCheck.原因);
+    if (locationCheck.需要确认 && params.已确认位置 !== true) {
+        throw new Error(`请先确认${npcName}就在附近并能听见你。`);
+    }
 
     const roleChatApi = 获取角色对话接口配置(deps.apiConfig);
     if (!接口配置是否可用(roleChatApi)) {
@@ -451,17 +480,18 @@ export const 执行角色对话 = async (deps: 角色对话依赖, params: 角�
                 }
             }
         }),
-        params.signal
+        params.signal,
+        { 中断时保留部分: true }
     );
-    const 最终回复 = reply.trim();
+    const 最终回复 = 清理角色对话输出(reply).trim();
     if (!最终回复) throw new Error('角色对话返回了空回复。');
 
     return {
         reply: 最终回复,
         npcName,
         新增消息: [
-            { ...(npcId ? { npcId } : {}), role: 'player', 发言人: 取文本(deps.角色?.姓名) || '玩家', 内容: 玩家输入, 时间: Date.now() },
-            { ...(npcId ? { npcId } : {}), role: 'npc', 发言人: npcName, 内容: 最终回复, 时间: Date.now() }
+            { ...(npcId ? { npcId } : {}), 会话类型: 'single', role: 'player', 发言人: 取文本(deps.角色?.姓名) || '玩家', 内容: 玩家输入, 时间: Date.now() },
+            { ...(npcId ? { npcId } : {}), 会话类型: 'single', role: 'npc', 发言人: npcName, 内容: 最终回复, 时间: Date.now() }
         ]
     };
 };

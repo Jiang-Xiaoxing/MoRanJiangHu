@@ -1728,6 +1728,15 @@ const App: React.FC = () => {
         () => 接口配置是否可用(获取角色对话接口配置(state.apiConfig)),
         [state.apiConfig]
     );
+    const 角色对话界面配置 = React.useMemo(() => {
+        const feature = state.apiConfig?.功能模型占位;
+        return {
+            群聊开启: feature?.角色对话群聊开关 === true,
+            自动回复上限: Math.min(6, Math.max(1, Number(feature?.角色对话群聊自动回复上限) || 3)),
+            单聊气泡样式: (feature?.角色对话单聊气泡样式 === 'split' ? 'split' : 'single') as 'single' | 'split',
+            群聊气泡样式: (feature?.角色对话群聊气泡样式 === 'single' ? 'single' : 'split') as 'single' | 'split'
+        };
+    }, [state.apiConfig]);
     const mainStoryApiLabel = `主剧情：${mainStoryApiInfo.channelName} / ${mainStoryApiInfo.modelName}`;
     const tavernPresetStatus = React.useMemo(() => {
         const config = state.gameConfig;
@@ -4539,12 +4548,20 @@ const App: React.FC = () => {
                             <RoleChatModal
                                 open={true}
                                 loading={state.loading}
+                                环境={state.环境}
                                 社交列表={state.社交}
                                 场外对话={state.场外对话 || []}
                                 配置就绪={角色对话配置就绪}
                                 onSend={(params) => actions.handleRoleChatSend(params)}
+                                onGroupSend={(params) => actions.handleGroupRoleChatSend(params)}
+                                onStop={() => actions.stopRoleChat()}
+                                onDiscard={() => actions.discardRoleChat()}
                                 onClear={() => actions.清空场外对话暂存()}
                                 onClose={() => setters.setShowRoleChat(false)}
+                                群聊开启={角色对话界面配置.群聊开启}
+                                自动回复上限={角色对话界面配置.自动回复上限}
+                                单聊气泡样式={角色对话界面配置.单聊气泡样式}
+                                群聊气泡样式={角色对话界面配置.群聊气泡样式}
                                 onOpenSettings={() => {
                                     setters.setActiveTab('role_chat');
                                     setters.setShowSettings(true);

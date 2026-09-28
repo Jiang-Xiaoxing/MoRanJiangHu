@@ -333,6 +333,10 @@ export interface 功能模型占位配置结构 {
     角色对话API地址: string;
     角色对话API密钥: string;
     角色对话提示词: string;
+    角色对话群聊开关: boolean;
+    角色对话群聊自动回复上限: number;
+    角色对话单聊气泡样式: 'single' | 'split';
+    角色对话群聊气泡样式: 'single' | 'split';
     小说拆分使用模型: string;
     小说拆分渠道ID?: string;
     小说拆分API地址: string;
@@ -1331,6 +1335,11 @@ export interface 聊天记录结构 {
 export interface 场外对话消息结构 {
     role: 'player' | 'npc';
     npcId?: string; // 该条对话的目标 NPC 标识（id 优先，缺 id 时用姓名）；用于按角色隔离回放
+    会话类型?: 'single' | 'group';
+    群聊ID?: string;
+    听众NPCIds?: string[]; // 群聊发言发生时实际能听见的人；新加入者不会补听旧消息
+    听众?: string[];
+    完成状态?: 'complete' | 'partial';
     发言人: string; // 玩家角色名 / NPC 姓名
     内容: string;
     时间: number; // 现实时间戳 Date.now()

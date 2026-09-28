@@ -1,9 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { NPC结构, 场外对话消息结构 } from '../../../types';
+import { 判断角色对话位置, 角色对话确认键 } from '../../../utils/roleChatLocation';
+import GroupRoleChatModal from './GroupRoleChatModal';
 
 interface Props {
     open: boolean;
     loading: boolean; // 主回合生成中
+    环境: any;
     社交列表: NPC结构[];
     场外对话: 场外对话消息结构[];
     配置就绪: boolean;
@@ -11,11 +14,19 @@ interface Props {
         npcId?: string;
         npcName?: string;
         玩家输入: string;
+        已确认位置?: boolean;
         onDelta?: (delta: string, accumulated: string) => void;
     }) => Promise<{ reply: string; npcName: string }>;
+    onGroupSend: React.ComponentProps<typeof GroupRoleChatModal>['onSend'];
+    onStop: () => void;
+    onDiscard: () => void;
     onClear: () => void;
     onClose: () => void;
     onOpenSettings?: () => void;
+    群聊开启: boolean;
+    自动回复上限: number;
+    单聊气泡样式: 'single' | 'split';
+    群聊气泡样式: 'single' | 'split';
 }
 
 // 「角色对话」侧聊面板：与单个在场 NPC 场外对话。
@@ -23,48 +34,61 @@ interface Props {
 const RoleChatModal: React.FC<Props> = ({
     open,
     loading,
+    环境,
     社交列表,
     场外对话,
     配置就绪,
     onSend,
+    onGroupSend,
+    onStop,
+    onDiscard,
     onClear,
     onClose,
-    onOpenSettings
+    onOpenSettings,
+    群聊开启,
+    自动回复上限,
+    单聊气泡样式,
+    群聊气泡样式
 }) => {
+    const [mode, setMode] = useState<'single' | 'group'>('single');
     const [selectedNpcId, setSelectedNpcId] = useState('');
     const [draft, setDraft] = useState('');
     const [sending, setSending] = useState(false);
     const [streamText, setStreamText] = useState('');
     const [error, setError] = useState('');
+    const [confirmedKey, setConfirmedKey] = useState('');
     const listRef = useRef<HTMLDivElement | null>(null);
 
-    const 在场NPC列表 = useMemo(() => {
+    const NPC候选 = useMemo(() => {
         return (Array.isArray(社交列表) ? 社交列表 : [])
-            .filter((npc) => npc?.是否在场 === true)
+            .map((npc) => ({ npc, check: 判断角色对话位置(npc, 环境) }))
             .slice()
             .sort((a, b) => {
-                const majorDiff = (b?.是否主要角色 === true ? 1 : 0) - (a?.是否主要角色 === true ? 1 : 0);
+                if (a.check.可选 !== b.check.可选) return a.check.可选 ? -1 : 1;
+                const majorDiff = (b.npc?.是否主要角色 === true ? 1 : 0) - (a.npc?.是否主要角色 === true ? 1 : 0);
                 if (majorDiff !== 0) return majorDiff;
-                return String(a?.姓名 || '').localeCompare(String(b?.姓名 || ''), 'zh-CN');
+                return String(a.npc?.姓名 || '').localeCompare(String(b.npc?.姓名 || ''), 'zh-CN');
             });
-    }, [社交列表]);
+    }, [社交列表, 环境]);
+    const 在场NPC列表 = useMemo(() => NPC候选.filter(item => item.check.可选).map(item => item.npc), [NPC候选]);
 
     // 按目标 NPC 隔离：面板只显示「正在对话的这名角色」的暂存，避免换人后串看/串注入。
     const 当前对话 = useMemo(() => {
         const list = Array.isArray(场外对话) ? 场外对话 : [];
-        const target = 在场NPC列表.find((npc) => String(npc?.id || '') === selectedNpcId) || 在场NPC列表[0] || null;
+        const target = 在场NPC列表.find((npc) => String(npc?.id || npc?.姓名 || '') === selectedNpcId) || 在场NPC列表[0] || null;
         const key = String(target?.id || '') || String(target?.姓名 || '');
         if (!key) return [];
-        return list.filter((item) => String(item?.npcId || '') === key);
+        return list.filter((item) => item.会话类型 !== 'group' && String(item?.npcId || '') === key);
     }, [场外对话, 在场NPC列表, selectedNpcId]);
 
     useEffect(() => {
         if (!open) return;
         setError('');
         setStreamText('');
+        setConfirmedKey('');
         setSelectedNpcId((prev) => {
-            if (prev && 在场NPC列表.some((npc) => String(npc?.id || '') === prev)) return prev;
-            return String(在场NPC列表[0]?.id || '');
+            if (prev && 在场NPC列表.some((npc) => String(npc?.id || npc?.姓名 || '') === prev)) return prev;
+            return String(在场NPC列表[0]?.id || 在场NPC列表[0]?.姓名 || '');
         });
     }, [open, 在场NPC列表]);
 
@@ -76,11 +100,14 @@ const RoleChatModal: React.FC<Props> = ({
 
     if (!open) return null;
 
-    const selectedNpc = 在场NPC列表.find((npc) => String(npc?.id || '') === selectedNpcId)
+    const selectedNpc = 在场NPC列表.find((npc) => String(npc?.id || npc?.姓名 || '') === selectedNpcId)
         || 在场NPC列表[0]
         || null;
     const busy = sending || loading;
-    const canSend = 配置就绪 && !busy && Boolean(selectedNpc) && draft.trim().length > 0;
+    const selectedCheck = selectedNpc ? 判断角色对话位置(selectedNpc, 环境) : null;
+    const selectedConfirmKey = selectedNpc ? 角色对话确认键(selectedNpc, 环境) : '';
+    const locationConfirmed = Boolean(selectedConfirmKey && confirmedKey === selectedConfirmKey);
+    const canSend = 配置就绪 && !busy && Boolean(selectedNpc) && locationConfirmed && draft.trim().length > 0;
 
     const handleSend = async () => {
         const text = draft.trim();
@@ -93,6 +120,7 @@ const RoleChatModal: React.FC<Props> = ({
                 npcId: String(selectedNpc?.id || ''),
                 npcName: String(selectedNpc?.姓名 || ''),
                 玩家输入: text,
+                已确认位置: true,
                 onDelta: (_delta, accumulated) => setStreamText(accumulated)
             });
             setDraft('');
@@ -103,6 +131,25 @@ const RoleChatModal: React.FC<Props> = ({
             setSending(false);
         }
     };
+
+    if (mode === 'group' && 群聊开启) {
+        return <GroupRoleChatModal
+            loading={loading}
+            环境={环境}
+            社交列表={社交列表}
+            场外对话={场外对话}
+            配置就绪={配置就绪}
+            自动回复上限={自动回复上限}
+            气泡样式={群聊气泡样式}
+            onSend={onGroupSend}
+            onStop={onStop}
+            onDiscard={onDiscard}
+            onClear={onClear}
+            onClose={onClose}
+            onSwitchToSingle={() => setMode('single')}
+            onOpenSettings={onOpenSettings}
+        />;
+    }
 
     const renderBubble = (item: 场外对话消息结构, index: number) => {
         const isPlayer = item.role === 'player';
@@ -116,7 +163,9 @@ const RoleChatModal: React.FC<Props> = ({
                     <div className={`text-[10px] mb-0.5 ${isPlayer ? 'text-wuxia-gold/80 text-right' : 'text-wuxia-cyan/80'}`}>
                         {item.发言人}
                     </div>
-                    <div className="whitespace-pre-wrap font-serif">{item.内容}</div>
+                    {(单聊气泡样式 === 'split' ? item.内容.replace(/\r\n?/g, '\n').split(/\n\s*\n|\n/u).filter(Boolean) : [item.内容]).map((part, partIndex) => (
+                        <div key={partIndex} className={`${partIndex > 0 ? 'mt-1.5 pt-1.5 border-t border-white/5' : ''} whitespace-pre-wrap font-serif`}>{part.trim()}</div>
+                    ))}
                 </div>
             </div>
         );
@@ -127,8 +176,9 @@ const RoleChatModal: React.FC<Props> = ({
             <div className="w-full max-w-3xl h-[85vh] rounded-2xl border border-wuxia-gold/30 bg-ink-black/95 shadow-[0_20px_60px_rgba(0,0,0,0.7)] overflow-hidden flex flex-col">
                 <div className="px-4 py-3 border-b border-gray-800/80 bg-black/40 flex items-center justify-between gap-2">
                     <div className="flex items-center gap-3 min-w-0">
-                        <div className="text-wuxia-gold font-serif font-bold tracking-widest text-sm md:text-base shrink-0">
-                            角色对话
+                        <div className="flex items-center gap-1 shrink-0">
+                            <button type="button" className="px-3 py-1.5 rounded border border-wuxia-gold/60 bg-wuxia-gold/15 text-xs text-wuxia-gold">单聊</button>
+                            {群聊开启 && <button type="button" onClick={() => setMode('group')} disabled={busy} className="px-3 py-1.5 rounded border border-gray-700 text-xs text-gray-300 disabled:opacity-40">群聊</button>}
                         </div>
                         <select
                             value={selectedNpcId}
@@ -138,7 +188,7 @@ const RoleChatModal: React.FC<Props> = ({
                         >
                             {在场NPC列表.length === 0 && <option value="">（当前没有在场角色）</option>}
                             {在场NPC列表.map((npc) => (
-                                <option key={String(npc?.id || npc?.姓名)} value={String(npc?.id || '')}>
+                                <option key={String(npc?.id || npc?.姓名)} value={String(npc?.id || npc?.姓名 || '')}>
                                     {npc?.是否主要角色 === true ? '★ ' : ''}{npc?.姓名 || '未知'}
                                 </option>
                             ))}
@@ -158,7 +208,7 @@ const RoleChatModal: React.FC<Props> = ({
                         )}
                         <button
                             type="button"
-                            onClick={onClose}
+                            onClick={() => { onDiscard(); onClose(); }}
                             className="px-2 py-1 text-[11px] rounded border border-gray-700 text-gray-400 hover:text-white"
                         >
                             关闭
@@ -185,6 +235,26 @@ const RoleChatModal: React.FC<Props> = ({
                         <div className="rounded-lg border border-gray-700 bg-black/30 p-3 text-xs text-gray-400 leading-relaxed">
                             当前场景没有在场角色：先推进剧情让角色登场，再回来找他对话。
                         </div>
+                    )}
+                    {selectedNpc && selectedCheck && (
+                        <label className={`flex items-start gap-2 rounded-lg border p-3 text-xs leading-relaxed ${selectedCheck.状态 === 'uncertain' ? 'border-amber-400/35 bg-amber-950/15 text-amber-100' : 'border-wuxia-cyan/25 bg-wuxia-cyan/5 text-gray-300'}`}>
+                            <input
+                                type="checkbox"
+                                checked={locationConfirmed}
+                                onChange={(e) => setConfirmedKey(e.target.checked ? selectedConfirmKey : '')}
+                                disabled={busy}
+                                className="mt-0.5 accent-amber-500"
+                            />
+                            <span><span className="font-bold">确认能够交谈：</span>{selectedCheck.原因}<br /><span className="text-[10px] opacity-70">记录位置：{selectedCheck.地点摘要}</span></span>
+                        </label>
+                    )}
+                    {NPC候选.some(item => !item.check.可选) && (
+                        <details className="rounded-lg border border-gray-800 bg-black/20 p-2 text-[11px] text-gray-500">
+                            <summary className="cursor-pointer">查看当前不能直接交谈的角色</summary>
+                            <div className="mt-2 space-y-1">
+                                {NPC候选.filter(item => !item.check.可选).map(item => <div key={String(item.npc?.id || item.npc?.姓名)}>{item.npc?.姓名 || '未知'}：{item.check.原因}</div>)}
+                            </div>
+                        </details>
                     )}
                     {配置就绪 && 当前对话.length === 0 && selectedNpc && (
                         <div className="rounded-lg border border-wuxia-cyan/25 bg-wuxia-cyan/5 p-3 text-xs text-gray-300 leading-relaxed">
@@ -221,7 +291,7 @@ const RoleChatModal: React.FC<Props> = ({
                                     void handleSend();
                                 }
                             }}
-                            disabled={!配置就绪 || busy || !selectedNpc}
+                            disabled={!配置就绪 || loading || !selectedNpc || !locationConfirmed}
                             rows={2}
                             placeholder={
                                 loading
@@ -230,13 +300,20 @@ const RoleChatModal: React.FC<Props> = ({
                             }
                             className="flex-1 min-w-0 bg-black/50 border border-gray-700 rounded-lg p-2.5 text-sm text-paper-white font-serif placeholder-gray-600 outline-none focus:border-wuxia-gold resize-none disabled:opacity-50"
                         />
+                        {sending && <button
+                            type="button"
+                            onClick={onStop}
+                            className="px-3 h-[46px] shrink-0 border border-red-500/50 text-red-200 rounded-lg text-xs"
+                        >
+                            立即停止
+                        </button>}
                         <button
                             type="button"
                             onClick={() => { void handleSend(); }}
                             disabled={!canSend}
                             className="px-4 h-[46px] shrink-0 bg-wuxia-gold text-ink-black rounded-lg font-bold text-sm hover:bg-white transition-all disabled:opacity-40 disabled:cursor-not-allowed"
                         >
-                            {sending ? '…' : '发送'}
+                            {sending ? '生成中' : '发送'}
                         </button>
                     </div>
                     <div className="text-[10px] text-gray-500 flex items-center justify-between gap-2">
