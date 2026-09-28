@@ -1330,6 +1330,7 @@ export interface 聊天记录结构 {
 // 不进入聊天记录，仅在玩家下一次提交主行动时打包注入主剧情上下文。
 export interface 场外对话消息结构 {
     role: 'player' | 'npc';
+    npcId?: string; // 该条对话的目标 NPC 标识（id 优先，缺 id 时用姓名）；用于按角色隔离回放
     发言人: string; // 玩家角色名 / NPC 姓名
     内容: string;
     时间: number; // 现实时间戳 Date.now()

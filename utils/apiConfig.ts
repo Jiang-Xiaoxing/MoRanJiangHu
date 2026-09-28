@@ -2243,6 +2243,8 @@ export const 获取角色对话接口配置 = (settings: 接口设置结构): �
     const feature = (settings as any)?.功能模型占位;
     const independent = Boolean(feature?.角色对话独立模型开关);
     if (!independent) return null;
+    // 未显式选择角色对话模型时不回退基础配置（主剧情）模型，避免静默共用主模型。
+    if (!读取字符串(feature?.角色对话使用模型).trim()) return null;
     return 构建独立文本接口配置(settings, {
         渠道ID: feature?.角色对话渠道ID,
         使用模型: feature?.角色对话使用模型,

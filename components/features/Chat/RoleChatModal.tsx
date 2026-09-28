@@ -49,6 +49,15 @@ const RoleChatModal: React.FC<Props> = ({
             });
     }, [社交列表]);
 
+    // 按目标 NPC 隔离：面板只显示「正在对话的这名角色」的暂存，避免换人后串看/串注入。
+    const 当前对话 = useMemo(() => {
+        const list = Array.isArray(场外对话) ? 场外对话 : [];
+        const target = 在场NPC列表.find((npc) => String(npc?.id || '') === selectedNpcId) || 在场NPC列表[0] || null;
+        const key = String(target?.id || '') || String(target?.姓名 || '');
+        if (!key) return [];
+        return list.filter((item) => String(item?.npcId || '') === key);
+    }, [场外对话, 在场NPC列表, selectedNpcId]);
+
     useEffect(() => {
         if (!open) return;
         setError('');
@@ -142,9 +151,9 @@ const RoleChatModal: React.FC<Props> = ({
                                 onClick={() => { if (!busy) onClear(); }}
                                 disabled={busy}
                                 className="px-2 py-1 text-[11px] rounded border border-gray-700 text-gray-400 hover:text-red-300 hover:border-red-400/50 disabled:opacity-40"
-                                title="清空暂存的场外对话（不会注入主回合）"
+                                title="清空所有角色的暂存场外对话（不会注入主回合）"
                             >
-                                清空暂存
+                                清空全部暂存
                             </button>
                         )}
                         <button
@@ -177,13 +186,13 @@ const RoleChatModal: React.FC<Props> = ({
                             当前场景没有在场角色：先推进剧情让角色登场，再回来找他对话。
                         </div>
                     )}
-                    {配置就绪 && 场外对话.length === 0 && selectedNpc && (
+                    {配置就绪 && 当前对话.length === 0 && selectedNpc && (
                         <div className="rounded-lg border border-wuxia-cyan/25 bg-wuxia-cyan/5 p-3 text-xs text-gray-300 leading-relaxed">
                             正在与【{selectedNpc?.姓名}】私下交谈。这里的话不消耗游戏时间、不直接改变世界；
                             暂存的对话会在你下次提交行动时一并交给主剧情处理，成功后自动清空。
                         </div>
                     )}
-                    {场外对话.map(renderBubble)}
+                    {当前对话.map(renderBubble)}
                     {sending && (
                         <div className="flex justify-start">
                             <div className="max-w-[85%] rounded-xl px-3 py-2 text-sm leading-relaxed border bg-black/40 border-gray-700/60 text-paper-white">
@@ -231,7 +240,10 @@ const RoleChatModal: React.FC<Props> = ({
                         </button>
                     </div>
                     <div className="text-[10px] text-gray-500 flex items-center justify-between gap-2">
-                        <span>暂存 {场外对话.length} 条 · 下次提交行动时一并注入，主回合成功后自动清空</span>
+                        <span>
+                            本对话暂存 {当前对话.length} 条{场外对话.length > 当前对话.length ? ` · 全部暂存 ${场外对话.length} 条` : ''}
+                            {' '}· 下次提交行动时一并注入，主回合成功后自动清空
+                        </span>
                         {loading && <span className="text-amber-300/80">主回合进行中，对话暂停</span>}
                     </div>
                 </div>
