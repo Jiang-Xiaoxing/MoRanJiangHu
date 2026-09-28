@@ -106,4 +106,15 @@ describe('群聊自动接话', () => {
         expect(result.结束原因).toBe('request_error');
         expect(result.新增消息.map(item => item.内容)).toContain('第一句已经说完。');
     });
+
+    it('后续角色返回空正文时同样保留已完成发言并安全暂停', async () => {
+        rawReplyMock
+            .mockResolvedValueOnce('<正文>第一句已经说完。</正文><调度>{"action":"continue","nextNpcId":"npc-2"}</调度>')
+            .mockResolvedValueOnce('<调度>{"action":"wait","nextNpcId":""}</调度>');
+        const result = await 执行角色群聊(deps() as any, {
+            参与者NPCIds: ['npc-1', 'npc-2'], 玩家输入: '继续。', 自动回复上限: 3, 已确认全部位置: true
+        });
+        expect(result.结束原因).toBe('request_error');
+        expect(result.新增消息.map(item => item.内容)).toContain('第一句已经说完。');
+    });
 });

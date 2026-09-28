@@ -219,7 +219,12 @@ export const 执行角色群聊 = async (deps: 角色对话依赖, params: 角�
             throw error;
         }
         const parsed = 解析群聊模型输出(raw);
-        if (!parsed.正文) throw new Error(`${npcName}返回了空回复。`);
+        if (!parsed.正文) {
+            // 已经有角色说完时，按“后续请求失败”处理：保留已完成发言并安全暂停，
+            // 而不是抛错导致整批（含前面已完成的发言）都进不了暂存。
+            if (newMessages.some(item => item.role === 'npc')) { endReason = 'request_error'; break; }
+            throw new Error(`${npcName}返回了空回复。`);
+        }
         const npcMessage: 场外对话消息结构 = {
             会话类型: 'group', 群聊ID: groupId, npcId, role: 'npc', 发言人: npcName,
             内容: parsed.正文, 时间: Date.now(), 听众NPCIds: audienceIds, 听众: audienceNames,

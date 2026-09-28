@@ -89,6 +89,16 @@ const GroupRoleChatModal: React.FC<Props> = (props) => {
         const el = listRef.current;
         if (el) el.scrollTop = el.scrollHeight;
     }, [currentMessages, liveMessages, stream]);
+    // 候选可选项变化（位置/在场/死亡等）后，剔除已不可选的成员，
+    // 并清掉指向它们的手动首位，避免发送时被工作流的重新校验拦下。
+    useEffect(() => {
+        const selectableIds = new Set(candidates.filter(item => item.check.可选).map(item => item.id));
+        setSelectedIds(prev => {
+            const next = prev.filter(id => selectableIds.has(id));
+            return next.length === prev.length ? prev : next;
+        });
+        setFirstNpcId(prev => (prev && !selectableIds.has(prev) ? '' : prev));
+    }, [candidates]);
 
     const close = () => {
         onDiscard();
@@ -108,11 +118,13 @@ const GroupRoleChatModal: React.FC<Props> = (props) => {
         setStream(null);
         setLiveMessages([]);
         stopAfterTurnRef.current = false;
+        let retryText = '';
         try {
             let nextText = text.trim();
             let shouldContinueOnly = continueOnly;
             let activeGroupId = groupId;
             do {
+                retryText = nextText;
                 setLiveMessages(shouldContinueOnly ? [] : [{
                     会话类型: 'group', 群聊ID: activeGroupId || 'pending', role: 'player', 发言人: '你',
                     内容: nextText, 时间: Date.now(), 完成状态: 'complete'
@@ -146,10 +158,18 @@ const GroupRoleChatModal: React.FC<Props> = (props) => {
                 nextText = queuedTextRef.current.trim();
                 queuedTextRef.current = '';
                 setQueuedText('');
+                retryText = '';
                 stopAfterTurnRef.current = false;
                 shouldContinueOnly = false;
             } while (nextText);
         } catch (e: any) {
+            // 请求异常时把这一轮尚未成功的文本退回输入框，避免玩家输入被静默丢弃。
+            const pending = queuedTextRef.current.trim() || retryText.trim();
+            if (pending) {
+                setDraft(pending);
+                queuedTextRef.current = '';
+                setQueuedText('');
+            }
             if (e?.name !== 'AbortError') setError(String(e?.message || e || '群聊请求失败'));
         } finally {
             setSending(false);
