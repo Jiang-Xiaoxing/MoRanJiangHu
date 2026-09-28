@@ -3189,6 +3189,9 @@ export const 执行主剧情发送工作流 = async (
                             fandomHeroinePlan: finalState.同人女主剧情规划,
                             memory: nextMemory,
                             叙事平静值: 本回合更新后的叙事平静值 || undefined,
+                            // 本回合已把暂存的场外对话吸收进正文/记忆，自动存档必须落盘“已清空”的状态，
+                            // 否则存档会写回旧的暂存（currentState 仍是发起回合时的闭包快照），读档后重复注入一次。
+                            场外对话: [],
                             force: true
                         });
                         const autoSaveId = Number(saved?.id);

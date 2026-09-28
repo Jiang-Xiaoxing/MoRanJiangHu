@@ -101,7 +101,9 @@ const RoleChatModelSettings: React.FC<Props> = ({ settings, onSave }) => {
                 功能模型占位: {
                     ...prev.功能模型占位,
                     角色对话独立模型开关: checked,
-                    角色对话使用模型: checked ? (currentModel || 主剧情解析模型 || '') : ''
+                    // 独立模型是硬前提：不拿主剧情模型兜底，否则「独立模型」名不副实、
+                    // 且开启开关后会直接复用主剧情模型静默生效。未选模型时面板只给引导。
+                    角色对话使用模型: checked ? currentModel : ''
                 }
             };
         });

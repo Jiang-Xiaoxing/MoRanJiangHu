@@ -19,7 +19,6 @@ const 首次响应超时毫秒 = 45 * 1000;
 const 流式空闲超时毫秒 = 90 * 1000;
 const 亲历回顾扫描回合上限 = 12; // 最多往前扫多少回合找该 NPC 的出场
 const 亲历回顾保留回合上限 = 6; // 命中再多也只保留最近 N 个出场回合
-const 亲历回顾保底回合数 = 2; // 一个都没命中时回退带最近 N 回合（玩家刚说完话的场景）
 const 暂存消息回放上限 = 60;
 const 常识块字符上限 = 8000;
 
@@ -60,7 +59,9 @@ export const 规范化场外对话列表 = (raw: unknown): 场外对话消息结
             const 内容 = 取文本(item?.内容);
             if (!内容) return null;
             const role = item?.role === 'npc' ? 'npc' : 'player';
+            const npcId = 取文本(item?.npcId);
             return {
+                ...(npcId ? { npcId } : {}),
                 role,
                 发言人: 取文本(item?.发言人) || (role === 'npc' ? 'NPC' : '玩家'),
                 内容,
@@ -70,6 +71,9 @@ export const 规范化场外对话列表 = (raw: unknown): 场外对话消息结
         .filter((item): item is 场外对话消息结构 => item !== null)
         .slice(-200);
 };
+
+// 目标 NPC 的稳定标识：优先 id，缺 id 时退回姓名（与 解析目标NPC 的查找口径一致）。
+const 取目标NPC标识 = (npc: any): string => 取文本(npc?.id) || 取文本(npc?.姓名);
 
 // —— 主回合注入块：把暂存的场外对话原文 + 处理指令打包给主剧情 AI ——
 export const 构建场外对话记录块 = (
@@ -267,10 +271,10 @@ export const 提取亲历回顾 = (
         if (!text) return '';
         return `${text}\n\n（以上是你亲身在场的最近经过；未出现在其中的事，除非在你的记忆里，你并不知情。）`;
     }
-    const 保底 = rounds.slice(-亲历回顾保底回合数);
-    const text = 保底.map(格式化回合片段).filter(Boolean).join('\n\n');
-    if (!text) return '';
-    return `${text}\n\n（以上是眼前正在发生的事；更早的事，除非在你的记忆里，你并不知情。）`;
+    // 一个都没命中：说明该 NPC 近年并未出现在正文里，不能假定他见过最近回合。
+    // 直接把最近回合的主回合原文（玩家输入 + 全部正文）喂给他，会把主角私下的行动、
+    // 镜头外的事件当成他的已知信息，违背本模块的认知边界承诺。此处返回空。
+    return '';
 };
 
 const 读取核心提示词内容 = (prompts: 提示词结构[] | undefined, id: string): string => {
@@ -311,6 +315,7 @@ export const 构建角色对话消息序列 = (deps: 角色对话依赖, params:
     const npc = 解析目标NPC(deps.社交, params);
     if (!npc) throw new Error('未找到目标 NPC');
     const npcName = 取文本(npc.姓名) || '目标NPC';
+    const npcId = 取目标NPC标识(npc);
     const playerName = 取文本(deps.角色?.姓名) || '玩家';
     const systemPrompt = (() => {
         const custom = 取文本((deps.apiConfig as any)?.功能模型占位?.角色对话提示词);
@@ -333,7 +338,11 @@ export const 构建角色对话消息序列 = (deps: 角色对话依赖, params:
         ...knowledgeBlocks.map((block) => ({ role: 'system' as const, content: block }))
     ];
 
-    const 暂存 = 规范化场外对话列表(params.暂存对话).slice(-暂存消息回放上限);
+    // 只回放「与当前这名 NPC」的对话：换人后另一人的私聊内容不得进入他的上下文。
+    // 没有 npcId 的旧记录无法安全判定归属，一律不回放。
+    const 暂存 = 规范化场外对话列表(params.暂存对话)
+        .filter((item) => Boolean(取文本(item.npcId)) && 取文本(item.npcId) === npcId)
+        .slice(-暂存消息回放上限);
     for (const item of 暂存) {
         messages.push({
             role: item.role === 'npc' ? 'assistant' : 'user',
@@ -351,83 +360,77 @@ const 创建超时错误 = (message: string): Error => {
 };
 
 // 超时包装：流式断流时若已有部分回复则采用部分文本，避免面板卡死。
-const 执行角色对话请求带超时 = async (
+// 注意：settle 必须真正结算外层 Promise（resolve/reject），否则超时/取消后外层仍要等
+// task 自己因 abort 抛错，部分回复会被丢掉、甚至一直挂着。
+export const 执行角色对话请求带超时 = (
     task: (signal: AbortSignal, onDelta: (delta: string, accumulated: string) => void) => Promise<string>,
     parentSignal?: AbortSignal
 ): Promise<string> => {
-    const controller = new AbortController();
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    let accumulated = '';
-    let receivedResponse = false;
-    let settled = false;
+    return new Promise<string>((resolve, reject) => {
+        const controller = new AbortController();
+        let timer: ReturnType<typeof setTimeout> | null = null;
+        let accumulated = '';
+        let receivedResponse = false;
+        let settled = false;
 
-    const handleParentAbort = () => {
-        const reason = parentSignal?.reason ?? new DOMException('请求已取消', 'AbortError');
-        settleReject(reason);
-        controller.abort(reason);
-    };
+        const clearTimer = () => {
+            if (timer !== null) {
+                clearTimeout(timer);
+                timer = null;
+            }
+        };
+        const finish = (mode: 'resolve' | 'reject', value: unknown) => {
+            if (settled) return;
+            settled = true;
+            clearTimer();
+            parentSignal?.removeEventListener('abort', handleParentAbort);
+            if (mode === 'resolve') resolve(value as string);
+            else reject(value);
+        };
+        const handleParentAbort = () => {
+            const reason = parentSignal?.reason ?? new DOMException('请求已取消', 'AbortError');
+            finish('reject', reason);
+            controller.abort(reason);
+        };
+        const handleTimeout = () => {
+            if (accumulated.trim().length > 0) {
+                finish('resolve', accumulated);
+            } else {
+                finish('reject', 创建超时错误(receivedResponse ? '角色对话流式输出空闲超时' : '角色对话等待首次响应超时'));
+            }
+            controller.abort(new DOMException('角色对话请求超时', 'AbortError'));
+        };
+        const resetTimer = (timeoutMs: number) => {
+            clearTimer();
+            timer = setTimeout(handleTimeout, timeoutMs);
+        };
 
-    const clearTimer = () => {
-        if (timer !== null) {
-            clearTimeout(timer);
-            timer = null;
+        if (parentSignal) {
+            if (parentSignal.aborted) {
+                finish('reject', parentSignal.reason ?? new DOMException('请求已取消', 'AbortError'));
+                return;
+            }
+            parentSignal.addEventListener('abort', handleParentAbort, { once: true });
         }
-    };
-    const settleResolve = (value: string) => {
-        if (settled) return;
-        settled = true;
-        clearTimer();
-        parentSignal?.removeEventListener('abort', handleParentAbort);
-    };
-    const settleReject = (reason: unknown) => {
-        if (settled) return;
-        settled = true;
-        clearTimer();
-        parentSignal?.removeEventListener('abort', handleParentAbort);
-    };
+        resetTimer(首次响应超时毫秒);
 
-    const handleTimeout = () => {
-        if (accumulated.trim().length > 0) {
-            settleResolve(accumulated);
-        } else {
-            settleReject(创建超时错误(receivedResponse ? '角色对话流式输出空闲超时' : '角色对话等待首次响应超时'));
-        }
-        controller.abort(new DOMException('角色对话请求超时', 'AbortError'));
-    };
-    const resetTimer = (timeoutMs: number) => {
-        clearTimer();
-        timer = setTimeout(handleTimeout, timeoutMs);
-    };
-
-    if (parentSignal) {
-        if (parentSignal.aborted) {
-            throw parentSignal.reason ?? new DOMException('请求已取消', 'AbortError');
-        }
-        parentSignal.addEventListener('abort', handleParentAbort, { once: true });
-    }
-    resetTimer(首次响应超时毫秒);
-
-    try {
-        const result = await task(controller.signal, (_delta, currentAccumulated) => {
+        task(controller.signal, (_delta, currentAccumulated) => {
             if (settled) return;
             receivedResponse = true;
             accumulated = currentAccumulated;
             resetTimer(流式空闲超时毫秒);
-        });
-        settleResolve(result);
-        return result;
-    } catch (error) {
-        if (!settled) {
-            settleReject(error);
-        }
-        throw error;
-    }
+        }).then(
+            (result) => finish('resolve', result),
+            (error) => finish('reject', error)
+        );
+    });
 };
 
 export const 执行角色对话 = async (deps: 角色对话依赖, params: 角色对话参数): Promise<角色对话结果> => {
     const npc = 解析目标NPC(deps.社交, params);
     if (!npc) throw new Error('未找到目标 NPC，请先选择一名在场角色。');
     const npcName = 取文本(npc.姓名) || '目标NPC';
+    const npcId = 取目标NPC标识(npc);
     const 玩家输入 = 取文本(params.玩家输入);
     if (!玩家输入) throw new Error('输入内容为空。');
 
@@ -457,8 +460,8 @@ export const 执行角色对话 = async (deps: 角色对话依赖, params: 角�
         reply: 最终回复,
         npcName,
         新增消息: [
-            { role: 'player', 发言人: 取文本(deps.角色?.姓名) || '玩家', 内容: 玩家输入, 时间: Date.now() },
-            { role: 'npc', 发言人: npcName, 内容: 最终回复, 时间: Date.now() }
+            { ...(npcId ? { npcId } : {}), role: 'player', 发言人: 取文本(deps.角色?.姓名) || '玩家', 内容: 玩家输入, 时间: Date.now() },
+            { ...(npcId ? { npcId } : {}), role: 'npc', 发言人: npcName, 内容: 最终回复, 时间: Date.now() }
         ]
     };
 };
