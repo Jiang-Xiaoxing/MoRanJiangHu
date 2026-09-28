@@ -62,6 +62,14 @@ describe('规范化场外对话列表', () => {
         expect(list[0].npcId).toBe('npc-1');
         expect(list[1].npcId).toBeUndefined();
     });
+
+    it('保留群聊听众快照，供后续角色知情范围与主剧情注入使用', () => {
+        const [message] = 规范化场外对话列表([{
+            会话类型: 'group', 群聊ID: 'g-1', npcId: 'npc-1', role: 'npc', 发言人: '沈听澜',
+            内容: '此事只在座几人知道。', 时间: 1, 听众NPCIds: ['npc-1', 'npc-2'], 听众: ['沈听澜', '老李']
+        }]);
+        expect(message).toMatchObject({ 会话类型: 'group', 群聊ID: 'g-1', 听众NPCIds: ['npc-1', 'npc-2'], 听众: ['沈听澜', '老李'] });
+    });
 });
 
 describe('构建场外对话记录块', () => {
@@ -140,6 +148,14 @@ describe('提取亲历回顾（不含未来剧本）', () => {
         expect(text).not.toContain('山路安静');
         expect(text).not.toContain('埋了');
     });
+
+    it('玩家只在输入中点名 NPC 不能证明该 NPC 亲历了该回合', () => {
+        const history: any[] = [
+            mkUser('沈听澜现在在哪里？我把密信藏到床下。', '1年01月02日:辰时'),
+            mkAssistant([{ sender: '旁白', text: '屋中没有旁人。' }], '1年01月02日:辰时')
+        ];
+        expect(提取亲历回顾(history, '沈听澜', { memoryConfig: { 即时消息上传条数N: 10 } })).toBe('');
+    });
 });
 
 describe('构建角色对话消息序列（认知范围白名单）', () => {
@@ -193,6 +209,7 @@ describe('构建角色对话消息序列（认知范围白名单）', () => {
             { npcId: 'npc-1', role: 'npc', 发言人: '沈听澜', 内容: '沈家旧事。', 时间: 2 },
             { npcId: 'npc-2', role: 'player', 发言人: '姜小星', 内容: '毒酒埋哪了？', 时间: 3 },
             { npcId: 'npc-2', role: 'npc', 发言人: '老李', 内容: '后厨柴堆下。', 时间: 4 },
+            { 会话类型: 'group', 群聊ID: 'g-1', npcId: 'npc-1', role: 'npc', 发言人: '沈听澜', 内容: '群聊里公开说过的话', 时间: 4.5, 听众NPCIds: ['npc-1', 'npc-2'] },
             { role: 'npc', 发言人: '沈听澜', 内容: '无归属的旧记录', 时间: 5 }
         ];
 
@@ -200,12 +217,23 @@ describe('构建角色对话消息序列（认知范围白名单）', () => {
             .map((m) => m.content).join('\n');
         expect(对沈听澜).toContain('沈家旧事');
         expect(对沈听澜).not.toContain('后厨柴堆下');
+        expect(对沈听澜).not.toContain('群聊里公开说过的话');
         expect(对沈听澜).not.toContain('无归属的旧记录');
 
         const 对老李 = 构建角色对话消息序列(deps, { npcId: 'npc-2', 玩家输入: '继续说。', 暂存对话 })
             .map((m) => m.content).join('\n');
         expect(对老李).toContain('后厨柴堆下');
         expect(对老李).not.toContain('沈家旧事');
+    });
+
+    it('是否在场为真但明确位于远处的角色不会被写进“眼前的人”', () => {
+        const deps = 基础依赖();
+        deps.环境 = { 大地点: '临安', 小地点: '仁心堂', 具体地点: '药房' };
+        (deps.社交[0] as any).当前位置 = '药房';
+        (deps.社交[1] as any).位置路径 = '临安 > 城北 > 渡口';
+        const text = 构建角色对话消息序列(deps, { npcId: 'npc-1', 玩家输入: '这里还有谁？' })
+            .map(item => item.content).join('\n');
+        expect(text).not.toContain('老李');
     });
 });
 
@@ -241,6 +269,17 @@ describe('执行角色对话请求带超时', () => {
         const controller = new AbortController();
         const promise = 执行角色对话请求带超时(() => new Promise<string>(() => { /* 永不结算 */ }), controller.signal);
         const assertion = expect(promise).rejects.toThrow();
+        controller.abort();
+        await assertion;
+    });
+
+    it('允许停止按钮保留已经收到的部分正文，同时仍立即结算', async () => {
+        const controller = new AbortController();
+        const promise = 执行角色对话请求带超时((_signal, onDelta) => {
+            onDelta('<正文>先等等。', '<正文>先等等。');
+            return new Promise<string>(() => { /* 等待用户停止 */ });
+        }, controller.signal, { 中断时保留部分: true });
+        const assertion = expect(promise).resolves.toBe('<正文>先等等。');
         controller.abort();
         await assertion;
     });

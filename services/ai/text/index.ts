@@ -13,6 +13,7 @@ export {
     generateFandomRealmData,
     generatePolishedBody,
     generateRoleChatReply,
+    generateRoleChatRawReply,
     清理角色对话输出,
     generatePlanningAnalysis,
     generateNovelDecomposition,

@@ -192,6 +192,10 @@ test('角色对话面板：暂存随存档恢复、按 NPC 隔离、未配置时
     await expect(panel.getByText('乙线：后厨柴堆下堆着两捆。')).toHaveCount(0);
     await expect(panel.getByText(/本对话暂存 2 条/)).toBeVisible();
     await expect(panel.getByText(/全部暂存 4 条/)).toBeVisible();
+    await expect(panel.getByText(/确认能够交谈/)).toBeVisible();
+    await expect(panel.getByText(/记录不足，无法由程序确认彼此距离/)).toBeVisible();
+    await panel.getByText('查看当前不能直接交谈的角色').click();
+    await expect(panel.getByText(/离场客：离场客不在当前场景/)).toBeVisible();
 
     // 切到乙：甲的私聊必须消失，乙线出现。
     await panel.locator('select').first().selectOption('npc-role-b');
@@ -254,6 +258,33 @@ test('角色对话面板：暂存随存档恢复、按 NPC 隔离、未配置时
     const toggle = page.getByRole('switch', { name: '切换角色对话独立模型' });
     await expect(toggle).toBeVisible({ timeout: 10000 });
     await expect(toggle).toHaveAttribute('aria-checked', 'false');
+    const groupToggle = page.getByRole('switch', { name: '切换多人群聊' });
+    await expect(groupToggle).toBeVisible();
+    await expect(groupToggle).toHaveAttribute('aria-checked', 'false');
+    await groupToggle.click({ timeout: 5000, force: true });
+    await expect(groupToggle).toHaveAttribute('aria-checked', 'true');
+
+    // 群聊开关保存后，面板可切到群聊；候选仍需逐一选择并确认真实交谈距离。
+    await page.getByRole('button', { name: '保存设置' }).first().click({ timeout: 5000, force: true });
+    await expect(page.getByText('✔ 配置已保存')).toBeVisible({ timeout: 5000 });
+    await page.getByRole('button', { name: '关闭设置' }).click({ timeout: 5000, force: true });
+    await roleChatEntry.click({ timeout: 5000, force: true });
+    const reopenedPanel = panelOf(page);
+    await expect(reopenedPanel).toBeVisible({ timeout: 5000 });
+    await reopenedPanel.getByRole('button', { name: '群聊' }).click({ timeout: 5000, force: true });
+    const groupPanel = page.locator('div[class*="z-[230]"][class*="fixed"]').filter({ hasText: '每位角色发言会分别调用所选模型' }).first();
+    await expect(groupPanel).toBeVisible({ timeout: 5000 });
+    await expect(groupPanel.getByText(/选择至少两名角色/)).toBeVisible();
+    const candidateChecks = groupPanel.locator('input[type="checkbox"]');
+    await candidateChecks.nth(0).check({ force: true });
+    await candidateChecks.nth(1).check({ force: true });
+    await expect(groupPanel.getByText(/我确认所选角色此刻都在附近/)).toBeVisible();
+    await expect(groupPanel.locator('textarea')).toBeDisabled();
+    await page.screenshot({ path: 'artifacts/e2e-group-role-chat-day-mode.png', fullPage: false });
+
+    // 未配置独立模型时，即使群聊已经开启，也只能去设置，不能偷偷调用主剧情模型。
+    await groupPanel.getByRole('button', { name: '去设置' }).click({ timeout: 5000, force: true });
+    await expect(toggle).toBeVisible({ timeout: 5000 });
 
     await toggle.click({ timeout: 5000, force: true });
     await expect(toggle).toHaveAttribute('aria-checked', 'true');
