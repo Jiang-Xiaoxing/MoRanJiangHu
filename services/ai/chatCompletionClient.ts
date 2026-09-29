@@ -1667,6 +1667,11 @@ const 请求GeminiInteractions文本 = async (
     });
     if (!createResponse.ok) {
         const detail = await 读取失败详情文本(createResponse, errorDetailLimit);
+        // 与 OpenAI 家族保持一致：401/403/404 与网关超时先翻译成可执行的排查建议。
+        const 创建鉴权地址提示 = 翻译鉴权与地址错误提示(createResponse.status, detail);
+        if (创建鉴权地址提示) throw new 协议请求错误(创建鉴权地址提示, createResponse.status, detail);
+        const 创建网关超时提示 = 翻译网关超时提示(createResponse.status, detail);
+        if (创建网关超时提示) throw new 协议请求错误(创建网关超时提示, createResponse.status, detail);
         throw new 协议请求错误(`Gemini Interactions API Error: ${createResponse.status}${detail ? ` - ${detail}` : ''}`, createResponse.status, detail);
     }
 
@@ -1696,6 +1701,10 @@ const 请求GeminiInteractions文本 = async (
         });
         if (!pollResponse.ok) {
             const detail = await 读取失败详情文本(pollResponse, errorDetailLimit);
+            const 轮询鉴权地址提示 = 翻译鉴权与地址错误提示(pollResponse.status, detail);
+            if (轮询鉴权地址提示) throw new 协议请求错误(轮询鉴权地址提示, pollResponse.status, detail);
+            const 轮询网关超时提示 = 翻译网关超时提示(pollResponse.status, detail);
+            if (轮询网关超时提示) throw new 协议请求错误(轮询网关超时提示, pollResponse.status, detail);
             throw new 协议请求错误(`Gemini Interactions API Error: ${pollResponse.status}${detail ? ` - ${detail}` : ''}`, pollResponse.status, detail);
         }
 
