@@ -397,6 +397,9 @@ export const 清理角色对话输出 = (rawText: string): string => {
     return text
         .replace(/<judge>[\s\S]*?<\/judge>/gi, '')
         .replace(/<角色对话协议>[\s\S]*?<\/角色对话协议>/g, '')
+        // 部分模型在该闭合 <正文> 时会再开一个新标签，上面的提取会把残留的
+        // 孤立 <正文>/</正文> 一起带进正文，这里统一清掉。
+        .replace(/<\/?正文>/gi, '')
         .trim();
 };
 
