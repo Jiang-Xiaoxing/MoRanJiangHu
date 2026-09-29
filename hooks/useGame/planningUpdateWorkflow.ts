@@ -27,6 +27,7 @@ import { 创建工作流性能诊断 } from '../../utils/performanceDebug';
 import { 后台分段执行, 后台让出主线程 } from '../../utils/backgroundScheduling';
 import { 执行游戏后台重计算 } from '../../utils/gameHeavyWorkerClient';
 import { 构建规划性别比例约束摘要 } from '../../prompts/runtime/planningAnalysis';
+import { 收集在档人物名集合, 校准规划关联人物一致性 } from '../../utils/planningConsistency';
 
 type 规划更新工作流依赖 = {
     apiConfig: any;
@@ -652,6 +653,19 @@ export const 创建规划更新工作流 = (deps: 规划更新工作流依赖) =
             fandomStoryPlan: params.state.同人剧情规划,
             fandomHeroinePlan: params.state.同人女主剧情规划
         }), { commandCount: commands.length }));
+        // 规划 ↔ 社交 一致性校准：规划分析会从剧情上下文把已退场/从未入档的
+        // 角色带回关联人物，落地前对照社交名单打上【人物核对】标记（只标记
+        // 不剔除，避免误伤尚未出场的合法未来规划）。
+        const 在档人物名单 = 收集在档人物名集合(params.state.社交, deps.角色?.姓名);
+        const 规划校准结果 = probe.time('校准规划关联人物一致性', () => {
+            if (fandomEnabled && patched.fandomStoryPlan) {
+                return 校准规划关联人物一致性(patched.fandomStoryPlan, 在档人物名单).变更条目数;
+            }
+            return 校准规划关联人物一致性(patched.storyPlan, 在档人物名单).变更条目数;
+        });
+        if (规划校准结果 > 0) {
+            probe.mark('规划关联人物一致性校准', { 变更条目数: 规划校准结果 });
+        }
         const syncedPatchedStory = await probe.timeAsync('同步小说分解时间校准', () => 同步剧情小说分解时间校准({
             previousStory: params.state.剧情,
             nextStory: patched.story,
