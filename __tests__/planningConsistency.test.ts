@@ -71,6 +71,18 @@ describe('校准规划关联人物一致性', () => {
         expect(plan.当前章任务[0].当前状态.match(/【人物核对】/g)?.length).toBe(1);
     });
 
+    it('标记后追加含【的普通文本时，刷新不叠加也不误删该文本', () => {
+        const plan = 构建规划();
+        const set = 收集在档人物名集合(社交, '');
+        校准规划关联人物一致性(plan, set);
+        // 模拟规划分析 AI 在标记后又追加了含【的其他文本
+        plan.当前章任务[0].当前状态 = `${plan.当前章任务[0].当前状态} 【复核备注】待定`;
+        const beforeCount = plan.当前章任务[0].当前状态.match(/【人物核对】/g)?.length ?? 0;
+        校准规划关联人物一致性(plan, set);
+        expect(plan.当前章任务[0].当前状态.match(/【人物核对】/g)?.length).toBe(beforeCount);
+        expect(plan.当前章任务[0].当前状态).toContain('【复核备注】待定');
+    });
+
     it('人物全部回档时清除旧标记', () => {
         const plan = 构建规划();
         // 柳无痕重新入档后，任务1 的标记应被清掉

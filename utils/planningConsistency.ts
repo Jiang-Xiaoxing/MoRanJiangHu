@@ -12,9 +12,13 @@
  * 入场安排或清理条目。
  */
 
-// 标记总是由本工具追加在 当前状态 末尾；剥离时只认末尾的完整标记段，
-// 避免误吞标记后面的普通文本。
-const 人物核对标记正则 = /\s*【人物核对】[^【]*$/;
+// 标记是本工具生成的固定句式（仅人物名列表可变，名字里不含「」）。
+// 剥离时只匹配完整句子且全局替换：即便规划分析 AI 在标记后又追加了
+// 含【的其他文本，也只会留下那段文本，不会导致标记叠加或误删普通内容。
+// 注意：查找用非 g 正则，避免 /g 的 lastIndex 状态化问题；剥离用 g。
+const 人物核对标记句式 = '【人物核对】关联人物 (?:「[^」]*」)+不在当前社交档案中（可能已退场或尚未出场），安排其登场前需先确认去向或补写入场。';
+const 含核对标记 = (text: string): boolean => new RegExp(人物核对标记句式).test(text);
+const 剥离核对标记 = (text: string): string => text.replace(new RegExp(人物核对标记句式, 'g'), '');
 
 const 规范化人物名 = (value: unknown): string => (
     typeof value === 'string' ? value.trim().replace(/\s+/g, '').toLowerCase() : ''
@@ -43,7 +47,7 @@ export const 收集在档人物名集合 = (social: unknown, 玩家名?: unknown
 };
 
 const 追加核对标记 = (当前状态: unknown, missing: string[]): string => {
-    const base = typeof 当前状态 === 'string' ? 当前状态.replace(人物核对标记正则, '').trim() : '';
+    const base = typeof 当前状态 === 'string' ? 剥离核对标记(当前状态).trim() : '';
     const note = `【人物核对】关联人物 ${missing.map((name) => `「${name}」`).join('')}不在当前社交档案中（可能已退场或尚未出场），安排其登场前需先确认去向或补写入场。`;
     return base ? `${base} ${note}` : note;
 };
@@ -60,8 +64,8 @@ const 校准条目 = (entry: unknown, 在档名单: Set<string>): boolean => {
     ));
     if (missing.length === 0) {
         // 人物已全部回档时清掉旧标记，避免提示残留。
-        if (typeof record.当前状态 === 'string' && 人物核对标记正则.test(record.当前状态)) {
-            record.当前状态 = record.当前状态.replace(人物核对标记正则, '').trim();
+        if (typeof record.当前状态 === 'string' && 含核对标记(record.当前状态)) {
+            record.当前状态 = 剥离核对标记(record.当前状态).trim();
             return true;
         }
         return false;
