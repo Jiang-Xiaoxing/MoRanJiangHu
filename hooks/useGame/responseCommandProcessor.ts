@@ -26,6 +26,7 @@ import { 构建体内射精记录, 推进社交孕产状态, 规范化孕产时�
 import { 自动增加BaseAmount } from '../../services/auctionHouse';
 import { consumeScriptedMoneyDelta, peekScriptedMoneyDelta } from '../../utils/scriptedMoneyReconciler';
 import { 提取金钱命令字段, 同步金钱命令写入 } from './stateTransforms';
+import { 收集在档人物名集合, 校准规划关联人物一致性 } from '../../utils/planningConsistency';
 
 /** 判断是否为具体地点变更命令（多货币汇率系统用） */
 const 是否具体地点变更命令 = (key: string): boolean => {
@@ -1855,6 +1856,12 @@ export const 执行响应命令处理 = (
             });
         }
 
+        // 规划 ↔ 社交 一致性校准：命令写规划时可能把已退场/从未入档的角色
+        // 带回关联人物，对照本回合最终社交名单打【人物核对】标记（只标记不剔除）。
+        const 命令后在档人物名单 = 收集在档人物名集合(socialBuffer, charBuffer?.姓名);
+        校准规划关联人物一致性(storyPlanBuffer, 命令后在档人物名单);
+        校准规划关联人物一致性(fandomStoryPlanBuffer, 命令后在档人物名单);
+
         let finalState: 响应命令处理状态 = {
             角色: charBuffer,
             环境: deps.规范化环境信息(envBuffer),
@@ -1965,6 +1972,11 @@ export const 执行响应命令处理 = (
             return !npcName || npcName !== playerNormKey;
         });
     }
+
+    // 规划 ↔ 社交 一致性校准（同上）：对照本回合最终社交名单打【人物核对】标记。
+    const 预览在档人物名单 = 收集在档人物名集合(normalizedSocial, charBuffer?.姓名);
+    校准规划关联人物一致性(storyPlanBuffer, 预览在档人物名单);
+    校准规划关联人物一致性(fandomStoryPlanBuffer, 预览在档人物名单);
 
     let finalState: 响应命令处理状态 = {
         角色: charBuffer,

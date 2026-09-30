@@ -9,16 +9,10 @@ import {
     type 角色对话依赖,
     type 角色对话参数
 } from '../hooks/useGame/roleChatWorkflow';
-import { 清理角色对话输出 } from '../services/ai/storyTasks';
 import type { 场外对话消息结构 } from '../models/system';
 
-describe('清理角色对话输出', () => {
-    it('剥掉成对与孤立的正文标签', () => {
-        expect(清理角色对话输出('<正文>话一</正文>')).toBe('话一');
-        expect(清理角色对话输出('<正文>话二<正文>')).toBe('话二');
-        expect(清理角色对话输出('话三</正文>')).toBe('话三');
-    });
-});
+// 「清理角色对话输出」的标签清理用例已由官方 main 合入的
+// roleChatTagBoundaryCleanup.test.ts 覆盖（成对/双开/孤立闭合/字面保留）。
 
 const 目标NPC = {
     id: 'npc-1',
