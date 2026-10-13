@@ -14,6 +14,7 @@ import type { 当前可用接口结构 } from '../../utils/apiConfig';
 import { 获取主剧情接口配置, 接口配置是否可用 } from '../../utils/apiConfig';
 import { 规范化游戏设置 } from '../../utils/gameSettings';
 import { 获取快速重开运行时恢复参数 } from '../../utils/customNewGamePresets';
+import { 解析题材包修炼默认值 } from '../../utils/modeCultivationDefault';
 import { 执行开场剧情生成工作流 } from './openingStoryWorkflow';
 import { 执行世界生成工作流 } from './worldGenerationWorkflow';
 
@@ -391,6 +392,11 @@ export const 创建会话生命周期工作流 = (deps: 会话生命周期依赖
         }
         // 将创意工坊题材模式预设写入游戏设置（存入存档），用户后续可在游戏内设置中覆盖
         const 题材预设 = openingConfig?.modeRuntimeProfile;
+        // 设置游戏设置是 React setState，本次开局工作流拿到的仍是闭包里的旧 deps.gameConfig。
+        // 若只更新 state 而不把生效值同步传给工作流，题材包声明的修炼默认值在
+        // 世界观生成 / 境界体系写入 / 开场请求这三处首次开局链路上都不生效。
+        // 因此这里先在本地算出「本次开局实际生效的设置」，同时用于 state 更新与工作流入参。
+        let 本次生效游戏设置 = deps.gameConfig;
         if (题材预设) {
             const 预设键值: Record<string, any> = {};
             if (typeof 题材预设.性别比例演变预设 === 'boolean') {
@@ -399,8 +405,24 @@ export const 创建会话生命周期工作流 = (deps: 会话生命周期依赖
             if (题材预设.叙事平静值配置 && typeof 题材预设.叙事平静值配置 === 'object') {
                 预设键值.叙事平静值配置 = 题材预设.叙事平静值配置;
             }
+            // 题材包声明的「启用修炼」此前是死字段（只影响描述文本与头像风格，从不进提示词）。
+            // 此处按「默认」语义接线：仅在玩家从未手动改过该开关时写入存档设置，
+            // 手动改过（启用修炼体系已手动设置 === true）则一律尊重玩家选择。
+            // 快速重开/重 roll 复用 handleGenerateWorld，必须跳过，否则会抹掉玩家中途的改动。
+            const 修炼默认值 = options?.重开恢复基线
+                ? undefined
+                : 解析题材包修炼默认值(openingConfig?.题材模式, 题材预设);
+            if (修炼默认值 !== undefined) {
+                预设键值.启用修炼体系 = 修炼默认值;
+            }
             if (Object.keys(预设键值).length > 0) {
-                deps.设置游戏设置((prev: any) => 规范化游戏设置({ ...prev, ...预设键值 }));
+                const 基础设置 = deps.gameConfig;
+                // 玩家手动改过修炼开关后，题材包不得再覆盖
+                const 有效键值 = (修炼默认值 !== undefined && 基础设置?.启用修炼体系已手动设置 === true)
+                    ? Object.fromEntries(Object.entries(预设键值).filter(([key]) => key !== '启用修炼体系'))
+                    : 预设键值;
+                本次生效游戏设置 = 规范化游戏设置({ ...基础设置, ...有效键值 });
+                deps.设置游戏设置((prev: any) => 规范化游戏设置({ ...prev, ...有效键值 }));
             }
         }
         return 执行世界生成工作流(
@@ -413,7 +435,7 @@ export const 创建会话生命周期工作流 = (deps: 会话生命周期依赖
             options,
             {
                 apiConfig: deps.apiConfig,
-                gameConfig: deps.gameConfig,
+                gameConfig: 本次生效游戏设置,
                 prompts: promptPool,
                 view: deps.view,
                 setView: deps.setView,
