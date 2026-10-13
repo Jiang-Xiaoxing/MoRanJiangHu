@@ -2801,3 +2801,19 @@ html[data-theme="day"] .novel-epub-repair-icon {
 html[data-theme="day"] .novel-epub-repair-label {
   color: rgb(120, 53, 15);
 }
+
+/**
+ * 懒加载 fallback（「卷轴展开中…」）必须整体穿透指针。
+ *
+ * Tailwind 的 `pointer-events-none` 只作用于元素自身，子元素会各自恢复
+ * `auto`，因此挂起骨架屏仍能命中指针、挡住上层元素。超时浮层
+ * （z-[300]）之下的 fallback（z-[260]）一旦拦截点击，玩家会看到
+ * 「关闭提示」按钮却点不动——在游戏态 chunk 卡住时等于没有自救出口。
+ *
+ * 这里用通配后代选择器兜底（不依赖任何 Tailwind 变体的 CSS 生成），
+ * 与组件上的内联 `pointerEvents: 'none'` 形成双保险。
+ */
+.lazy-scroll-passthrough,
+.lazy-scroll-passthrough * {
+  pointer-events: none !important;
+}

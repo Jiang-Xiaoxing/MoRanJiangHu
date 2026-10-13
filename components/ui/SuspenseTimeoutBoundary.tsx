@@ -157,11 +157,21 @@ const 挂起计时器: React.FC<{ onStart: () => void; onDone: () => void }> = (
         onStart();
         return onDone;
     }, [onStart, onDone]);
+    // pointer-events 必须显式作用到子树：Tailwind 的 `pointer-events-none`
+    // 只作用于元素自身，子元素会各自恢复 auto，仍能命中指针。超时浮层
+    // （z-[300]）之下的 fallback（z-[260]）会因此挡住浮层按钮——玩家看到
+    // 按钮却点不动，在 chunk 卡住时等于没有出路（e2e 实测）。
+    // ⚠️ 不要改用 `[&_*]:pointer-events-none`：JIT 变体在本项目的 tailwind
+    // content 扫描下未生成对应 CSS 规则（已验证），会静默失效。
+    // 这里用 className + 内联 style 双保险，两者都作用于整棵子树。
     return (
-        <div className="lazy-scroll-loading pointer-events-none fixed inset-0 z-[260] flex items-center justify-center bg-[#f8f4e8]/70 px-6 py-10 text-center backdrop-blur-[2px]">
+        <div
+            className="lazy-scroll-loading pointer-events-none fixed inset-0 z-[260] flex items-center justify-center bg-[#f8f4e8]/70 px-6 py-10 text-center backdrop-blur-[2px] lazy-scroll-passthrough"
+            style={{ pointerEvents: 'none' }}
+        >
             <div
                 className="lazy-scroll-shell rounded-2xl border border-wuxia-gold/35 bg-[#fffaf0]/95 px-6 py-5 text-[#7a4a1f] shadow-[0_18px_42px_rgba(120,82,38,0.18)]"
-                style={{ fontSize: 'var(--ui-compact-font-size, 14px)' }}
+                style={{ fontSize: 'var(--ui-compact-font-size, 14px)', pointerEvents: 'none' }}
             >
                 <div className="lazy-scroll-title tracking-[0.22em]">卷轴展开中…</div>
                 <div className="lazy-scroll-skeleton mt-5 grid gap-3 text-left" aria-hidden="true">

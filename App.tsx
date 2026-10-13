@@ -310,23 +310,42 @@ const 创建可预加载懒组件 = <T extends React.ComponentType<any>>(
     const preloadLoader = () => preloadLazyImport(importKey, loader);
 
     /**
-     * 用一个薄壳包住 React.lazy：
-     * React.lazy 会缓存 rejected payload（_status=2），失败后不再调用 loader。
-     * 游戏态内我们禁了整页刷新，所以必须能在失败后重建出**全新**的
-     * React.lazy 实例，否则玩家点开弹窗失败一次就永远打不开。
-     * 重建版本变化时 useMemo 会重新执行，产出新的 lazy 实例。
+     * 按重建版本缓存 React.lazy 实例（v1.0.682 致命回归的修复，勿改回 useMemo）。
+     *
+     * 背景：React.lazy 的 payload（_status/_result）挂在 lazy 实例对象上。
+     * 懒组件首次渲染就 suspend 时，Suspense 会**提交 fallback**，primary 子树
+     * （含本薄壳的 hook 与 useMemo 缓存）被整体删除；chunk 到位后 ping 回来，
+     * primary 从零重挂载。若 lazy 实例由 useMemo 按 fiber 生命周期创建，每次
+     * 重挂载都会拿到 _status=-1 的全新 payload：loader 重新发起 → promise
+     * 再次 resolve → ping 再次重试 → fallback 再次删除 primary……形成自激
+     * 死循环（e2e 实测约 1 万次/秒），弹窗永远渲染不出来，玩家看到的就是
+     * 「卷轴展开中…」转个不停。
+     *
+     * SettingsModal.tsx 等处的模块级 React.lazy 没这个问题，正是因为 payload
+     * 活在模块作用域、跨重挂载存活：第一次 resolve 后 _status 恒为 1，重挂载
+     * 直接拿到 .default。这里把实例按版本缓存进工厂闭包，语义与模块级单例
+     * 一致；版本变化（用户点「重新加载」）时换新实例，保留「绕开 rejected
+     * payload 重试」的能力。
      */
+    const 懒实例表 = new Map<number, React.LazyExoticComponent<T>>();
+    const 获取懒实例 = (版本: number): React.LazyExoticComponent<T> => {
+        let 实例 = 懒实例表.get(版本);
+        if (!实例) {
+            实例 = React.lazy(() => lazyImportWithReload(importKey, loader)) as React.LazyExoticComponent<T>;
+            懒实例表.set(版本, 实例);
+        }
+        return 实例;
+    };
+
     const 可重建懒壳: 可预加载组件<T> = (props) => {
         const 版本 = React.useSyncExternalStore(
             (listener) => 订阅懒组件重建(importKey, listener),
             () => 读取懒组件版本(importKey),
             () => 读取懒组件版本(importKey)
         );
-        const 懒实例 = React.useMemo(
-            () => React.lazy(() => lazyImportWithReload(importKey, loader)) as React.LazyExoticComponent<T>,
-            [版本]
-        );
-        return React.createElement(懒实例, props);
+        // 不用 useMemo：缓存由懒实例表负责，跨 Suspense 重挂载存活；
+        // 依赖 fiber 生命周期的 useMemo 正是死循环根因（见上方注释）。
+        return React.createElement(获取懒实例(版本), props);
     };
 
     可重建懒壳.preload = preloadLoader;
