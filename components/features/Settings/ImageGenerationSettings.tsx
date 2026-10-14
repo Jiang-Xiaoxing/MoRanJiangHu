@@ -679,7 +679,7 @@ const ImageGenerationSettings: React.FC<Props> = ({ settings, onSave }) => {
             '自动角色锚点启用',
         ];
         const scopeKeys: Record<生图配置档适用范围, Array<keyof 功能模型占位配置结构>> = {
-            npc: ['NPC生图启用', '自动NPC生图画风', '当前NPC画师串预设ID', '当前NPCPNG画风预设ID', '当前NPC词组转化器提示词预设ID', 'NPC生图性别筛选', 'NPC生图重要性筛选'],
+            npc: ['NPC生图启用', '自动NPC生图画风', '当前NPC画师串预设ID', '当前NPCPNG画风预设ID', '当前NPC词组转化器提示词预设ID', 'NPC生图性别筛选', 'NPC生图重要性筛选', 'NPC生图固定前缀自定义_女', 'NPC生图固定前缀自定义_男', 'NPC生图固定前缀自定义_男娘', 'NPC生图固定前缀自定义_扶她'],
             scene: ['场景生图启用', '自动场景生图画风', '自动场景生图构图要求', '自动场景生图横竖屏', '自动场景生图分辨率', '当前场景画师串预设ID', '当前场景PNG画风预设ID', '当前场景词组转化器提示词预设ID', '当前场景判定提示词预设ID', '场景生图独立接口启用', '场景生图后端类型', '场景生图模型使用模型', '场景生图模型API地址', '场景生图模型API密钥', '当前场景图片后端发现ID', '使用默认场景ComfyUI工作流', '场景ComfyUI工作流JSON'],
             item: ['物品生图启用', '自动物品生图画风', '自动物品生图渲染风格', '自动物品生图分辨率', '当前NPC画师串预设ID', '当前NPCPNG画风预设ID', '当前NPC词组转化器提示词预设ID'],
         };
@@ -2326,6 +2326,58 @@ const ImageGenerationSettings: React.FC<Props> = ({ settings, onSave }) => {
                         onChange={(next) => updatePlaceholder('随机种子生成', next)}
                         ariaLabel="切换随机种子生成"
                     />
+                </div>
+            </div>
+
+            <div className={卡片样式}>
+                <div>
+                    <div className="text-base font-bold text-cyan-200">NPC 固定性别前缀自定义</div>
+                    <div className="mt-1 text-xs leading-6 text-cyan-100/70">
+                        NPC 生图会在画师串前固定加入一段性别前缀（成年女性默认 <span className="font-mono">1woman, female, adult woman, feminine face, female body</span>）。
+                        填写后按性别整体替换内置前缀，方便按自己的画师串搭配调整；留空使用内置默认。年龄感提示词（如 young adult）仍会照常追加在后。
+                    </div>
+                </div>
+                <div className="mt-3 grid gap-4 md:grid-cols-2">
+                    <div className="space-y-2">
+                        <label className="text-sm font-bold text-cyan-200">女性前缀</label>
+                        <textarea
+                            value={form.功能模型占位.NPC生图固定前缀自定义_女 || ''}
+                            onChange={(e) => updatePlaceholder('NPC生图固定前缀自定义_女', e.target.value)}
+                            rows={2}
+                            placeholder="留空使用内置默认：1woman, female, adult woman, feminine face, female body"
+                            className="w-full rounded-md border-2 border-transparent bg-black/50 p-3 text-white outline-none transition-all focus:border-cyan-400 resize-y"
+                        />
+                    </div>
+                    <div className="space-y-2">
+                        <label className="text-sm font-bold text-cyan-200">男性前缀</label>
+                        <textarea
+                            value={form.功能模型占位.NPC生图固定前缀自定义_男 || ''}
+                            onChange={(e) => updatePlaceholder('NPC生图固定前缀自定义_男', e.target.value)}
+                            rows={2}
+                            placeholder="留空使用内置默认：1man, male, adult man, masculine face, male body"
+                            className="w-full rounded-md border-2 border-transparent bg-black/50 p-3 text-white outline-none transition-all focus:border-cyan-400 resize-y"
+                        />
+                    </div>
+                    <div className="space-y-2">
+                        <label className="text-sm font-bold text-cyan-200">男娘前缀</label>
+                        <textarea
+                            value={form.功能模型占位.NPC生图固定前缀自定义_男娘 || ''}
+                            onChange={(e) => updatePlaceholder('NPC生图固定前缀自定义_男娘', e.target.value)}
+                            rows={2}
+                            placeholder="留空使用内置默认：1boy, femboy, passing as female, ..."
+                            className="w-full rounded-md border-2 border-transparent bg-black/50 p-3 text-white outline-none transition-all focus:border-cyan-400 resize-y"
+                        />
+                    </div>
+                    <div className="space-y-2">
+                        <label className="text-sm font-bold text-cyan-200">扶她前缀</label>
+                        <textarea
+                            value={form.功能模型占位.NPC生图固定前缀自定义_扶她 || ''}
+                            onChange={(e) => updatePlaceholder('NPC生图固定前缀自定义_扶她', e.target.value)}
+                            rows={2}
+                            placeholder="留空使用内置默认：1woman, futanari, dickgirl, ..."
+                            className="w-full rounded-md border-2 border-transparent bg-black/50 p-3 text-white outline-none transition-all focus:border-cyan-400 resize-y"
+                        />
+                    </div>
                 </div>
             </div>
 
