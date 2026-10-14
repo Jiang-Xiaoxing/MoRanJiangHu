@@ -2971,6 +2971,10 @@ export const useGame = () => {
     const 是否可自动重试错误 = (error: any): boolean => {
         if (!error) return false;
         if (error?.name === 'AbortError') return false;
+        // [修复] 上游安全策略拦截（finish_reason=SAFETY 等）与输出上限零正文的错误
+        // 携带 不可重试 标记：同样内容的请求必然得到同样结果，重发只会重复消耗
+        // 输入 Token（此类请求上游照常计费）。Codex P2 审查意见。
+        if (error?.不可重试 === true) return false;
         return error instanceof textAIService.StoryResponseParseError
             || error?.name === 'StoryResponseParseError'
             || true;

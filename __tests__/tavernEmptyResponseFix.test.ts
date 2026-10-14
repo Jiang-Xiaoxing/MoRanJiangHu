@@ -4,11 +4,14 @@ import { 构建酒馆预设消息链 } from '../hooks/useGame/promptRuntime';
 
 describe('空正文 finish_reason 语义化（酒馆预设 200 空内容修复）', () => {
     it('安全类结束原因给出审核拦截提示且不可重试', () => {
-        const err = 构建空正文结束原因错误('SAFETY');
+        const err = 构建空正文结束原因错误('SAFETY') as any;
         expect(err).not.toBeNull();
         expect(err?.message).toContain('安全策略拦截');
         expect(err?.message).toContain('SAFETY');
         expect(err?.message).toContain('酒馆预设');
+        // Codex P2：必须携带显式不可重试标记，否则外层主剧情自动重试仍会重发
+        // 同样内容（重复消耗输入 Token，此类请求上游照常计费）
+        expect(err?.不可重试).toBe(true);
     });
 
     it('兼容 OpenAI 风格 content_filter 与 Gemini 原生 RECITATION/PROHIBITED_CONTENT/BLOCKLIST/SPII', () => {
@@ -19,11 +22,13 @@ describe('空正文 finish_reason 语义化（酒馆预设 200 空内容修复�
         }
     });
 
-    it('长度类结束原因提示调大 max_tokens', () => {
-        const err = 构建空正文结束原因错误('length');
+    it('长度类结束原因提示调大 max_tokens 且不可重试', () => {
+        const err = 构建空正文结束原因错误('length') as any;
         expect(err?.message).toContain('finish_reason=length');
         expect(err?.message).toContain('最大输出 Token');
-        expect(构建空正文结束原因错误('MAX_TOKENS')?.message).toContain('最大输出 Token');
+        expect((构建空正文结束原因错误('MAX_TOKENS') as any)?.message).toContain('最大输出 Token');
+        // 同样的 max_tokens 重发必然同样结果
+        expect(err?.不可重试).toBe(true);
     });
 
     it('正常停止原因不接手（交给上层通用空内容路径）', () => {
@@ -33,9 +38,11 @@ describe('空正文 finish_reason 语义化（酒馆预设 200 空内容修复�
     });
 
     it('未知名结束原因保留可重试的通用空内容措辞', () => {
-        const err = 构建空正文结束原因错误('OTHER');
+        const err = 构建空正文结束原因错误('OTHER') as any;
         expect(err?.message).toContain('模型返回了空内容');
         expect(err?.message).toContain('finish_reason=OTHER');
+        // 桥接瞬时异常类保留可重试语义：不携带不可重试标记
+        expect(err?.不可重试).toBeUndefined();
     });
 });
 

@@ -78,6 +78,13 @@ export class 协议请求错误 extends Error {
      * 因此不允许改走同域中转重试（见 可以安全改走中转）。
      */
     已接收字节?: number;
+    /**
+     * 显式标记「重发无意义」：上游安全策略拦截（finish_reason=SAFETY 等）与
+     * 输出上限为零正文（finish_reason=length）时，同样内容的请求必然得到同样
+     * 结果。内层 带重试执行 与外层 是否可自动重试错误 都会识别该标记并跳过
+     * 重试，避免重复消耗输入 Token（此类请求上游照常计费）。
+     */
+    不可重试?: boolean;
 
     constructor(message: string, status?: number, detail?: string) {
         super(message);
@@ -859,6 +866,10 @@ const 是可重试状态码 = (status: number): boolean => {
 };
 
 const 错误可重试 = (error: unknown): boolean => {
+    // 显式标记不可重试的错误（上游安全拦截/输出上限零正文）：重发必然同样结果
+    if (error && typeof error === 'object' && (error as { 不可重试?: boolean }).不可重试 === true) {
+        return false;
+    }
     const status = 读取错误状态码(error);
     if (typeof status === 'number') {
         return 是可重试状态码(status);
@@ -1101,19 +1112,27 @@ export const 构建空正文结束原因错误 = (finishReason: string): Error |
     if (已知正常结束原因正则.test(reason)) return null;
 
     if (已知长度类结束原因正则.test(reason)) {
-        return new 协议请求错误(
+        const error = new 协议请求错误(
             `上游输出为空（finish_reason=${reason}）：模型在产出任何正文前就达到了输出上限。请在接口设置中调大「最大输出 Token」后重试。`,
             200
         );
+        // 同样的 max_tokens 重发必然同样结果，标记不可重试（见 协议请求错误.不可重试）
+        error.不可重试 = true;
+        return error;
     }
 
     if (已知安全类结束原因正则.test(reason)) {
-        return new 协议请求错误(
+        const error = new 协议请求错误(
             `上游安全策略拦截了本次生成（finish_reason=${reason}），未产出任何正文。` +
             `常见于提示词、世界书或角色卡内容触发上游审核（酒馆预设的越狱/系统提示词更容易命中），重发同样内容通常无效。` +
             `建议：① 精简或改写预设中可能触发审核的提示词、世界书条目后重试；② 更换模型或渠道；③ 官方 Gemini 接口可在 Google AI Studio 调整安全设置。`,
             200
         );
+        // 同样的内容重发必然同样被拦截，标记不可重试，阻止内层带重试执行与外层
+        // 主剧情自动重试重复发送（Codex P2：外层 是否可自动重试错误 默认对所有
+        // 非取消错误返回 true，不识别该标记会重复消耗输入 Token）
+        error.不可重试 = true;
+        return error;
     }
 
     return new Error(
