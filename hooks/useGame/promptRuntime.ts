@@ -605,23 +605,23 @@ const 应用Instruct模板后处理 = (
     let currentRole: 消息角色 | null = null;
     let currentParts: string[] = [];
 
-    // Instruct 模式下同一行列表实际已包含角色标记，
-    // 所以我们根据 instruct 序列标记判断消息角色
-    const inputSeq = (instruct.input_sequence || '').trim();
-    const outputSeq = (instruct.output_sequence || '').trim();
-    const sysSeq = (instruct.system_same_as_user ? inputSeq : (instruct.system_sequence || '')).trim();
-
+    // [修复] 角色按 baseMessages 的原始 role 逐条对应，不再靠行首序列猜测。
+    // 猜测法有两个实测坑（vitest 诊断脚本 R5/R6 复现）：
+    //   ① last_input_sequence 与 input_sequence 不一致时（Mistral/Llama3 变体常见），
+    //      最后的用户输入行不以 input_sequence 开头 → 兜底标成 system，
+    //      请求以 system 消息结尾，部分上游（Gemini 桥接/中转）直接返回空内容；
+    //   ② system_same_as_user=true 时 system 行与 user 行共用 input_sequence，
+    //      先命中 user 分支，system 消息被错标成 user。
+    // baseMessages 已过滤空 content，与 formattedLines 一一对应（空行跳过不影响索引语义：
+    // 空行对应的消息不存在）。
+    let baseIndex = 0;
     formattedLines.forEach((line) => {
         if (!line.trim()) return;
-        // 根据行首序列判断角色
-        let detectedRole: 消息角色 = 'system';
-        if (outputSeq && line.startsWith(outputSeq)) {
-            detectedRole = 'assistant';
-        } else if (inputSeq && line.startsWith(inputSeq)) {
-            detectedRole = 'user';
-        } else if (sysSeq && line.startsWith(sysSeq)) {
-            detectedRole = 'system';
-        }
+        const 原始消息 = baseMessages[baseIndex];
+        baseIndex += 1;
+        const detectedRole: 消息角色 = 原始消息?.role === 'assistant'
+            ? 'assistant'
+            : (原始消息?.role === 'user' ? 'user' : 'system');
 
         if (currentRole !== null && currentRole !== detectedRole) {
             // 角色切换，flush

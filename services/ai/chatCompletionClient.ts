@@ -135,10 +135,11 @@ const 响应详情疑似不支持流式 = (text: string): boolean => {
 
 export const 规范化文本补全消息链 = (
     messages: 通用消息[],
-    options?: { 保留System?: boolean; 合并同角色?: boolean }
+    options?: { 保留System?: boolean; 合并同角色?: boolean; 尾部System转User?: boolean }
 ): 通用消息[] => {
     const keepSystem = options?.保留System !== false;
     const mergeSameRole = options?.合并同角色 !== false;
+    const tailSystemToUser = options?.尾部System转User === true;
     const normalized: 通用消息[] = messages
         .map((msg) => {
             const isPrefix = msg.prefix === true;
@@ -153,6 +154,19 @@ export const 规范化文本补全消息链 = (
             };
         })
         .filter(msg => msg.content.length > 0);
+
+    // [修复] 请求以 system 消息结尾时，部分上游（Gemini 桥接、部分中转）会返回
+    // HTTP 200 空内容；酒馆 instruct 序列错标、post_history 注入都可能造成尾部 system。
+    // 把尾部 system 降为 user（prefix 消息除外——它是生成引导，不是待回复输入）。
+    if (tailSystemToUser) {
+        for (let index = normalized.length - 1; index >= 0; index -= 1) {
+            const tail = normalized[index];
+            if (tail.role === 'system' && tail.prefix !== true) {
+                tail.role = 'user';
+            }
+            break;
+        }
+    }
 
     if (!mergeSameRole) return normalized;
 
@@ -1058,6 +1072,55 @@ export const 读取失败详情文本 = async (response: Response, maxLen = 600)
     }
 };
 
+/**
+ * 已知的正常停止原因：模型自然生成结束或按工具调用协议收尾，不代表异常。
+ * 兼容 OpenAI 风格（stop/length/tool_calls）与 Gemini 原生风格（STOP/MAX_TOKENS/END_TURN）。
+ */
+const 已知正常结束原因正则 = /^(?:finish_reason_)?(stop|end_turn|eos|tool_calls|function_call|incomplete|complete)$/i;
+/** 输出长度耗尽：正文为空时说明 max_tokens 太小，模型还没产出正文就到顶了。 */
+const 已知长度类结束原因正则 = /^(?:finish_reason_)?(length|max_tokens)$/i;
+/**
+ * 安全策略类结束原因。Gemini 官方文档：命中内容过滤器时 Candidate.content 为空、
+ * finishReason 为 SAFETY/RECITATION/PROHIBITED_CONTENT/BLOCKLIST/SPII 等；
+ * OpenAI 兼容层与部分中转则映射为 content_filter。
+ */
+const 已知安全类结束原因正则 = /^(?:finish_reason_)?(safety|recitation|prohibited_content|blocklist|spii|image_prohibited_content|malformed_function_call|content_filter)$/i;
+
+/**
+ * 把「零正文增量」场景下的 finish_reason 翻译成可操作的错误。
+ *
+ * - 安全类 → 明确告知被上游审核拦截及应对办法（不可重试：重发同样内容照样被拦）
+ * - 长度类 → 提示调大 max_tokens
+ * - 其他未知名（含 Gemini 原生 OTHER、桥接瞬时异常）→ 保留「模型返回了空内容」措辞，
+ *   维持既有可重试语义（见 错误可重试）
+ * - 正常停止原因 → 返回 null，交给上层 校验非空结果 走通用空内容路径
+ */
+export const 构建空正文结束原因错误 = (finishReason: string): Error | null => {
+    const reason = (finishReason || '').trim();
+    if (!reason) return null;
+    if (已知正常结束原因正则.test(reason)) return null;
+
+    if (已知长度类结束原因正则.test(reason)) {
+        return new 协议请求错误(
+            `上游输出为空（finish_reason=${reason}）：模型在产出任何正文前就达到了输出上限。请在接口设置中调大「最大输出 Token」后重试。`,
+            200
+        );
+    }
+
+    if (已知安全类结束原因正则.test(reason)) {
+        return new 协议请求错误(
+            `上游安全策略拦截了本次生成（finish_reason=${reason}），未产出任何正文。` +
+            `常见于提示词、世界书或角色卡内容触发上游审核（酒馆预设的越狱/系统提示词更容易命中），重发同样内容通常无效。` +
+            `建议：① 精简或改写预设中可能触发审核的提示词、世界书条目后重试；② 更换模型或渠道；③ 官方 Gemini 接口可在 Google AI Studio 调整安全设置。`,
+            200
+        );
+    }
+
+    return new Error(
+        `模型返回了空内容（HTTP 200 但未收到任何正文增量，finish_reason=${reason}）。常见原因：上游安全策略拦截了本次生成、思考型模型未产出正文，或桥接服务瞬时异常。建议重试或更换渠道/模型。`
+    );
+};
+
 const 创建SSE文本处理器 = (
     extractDelta: 增量提取器,
     onDelta?: (delta: string, accumulated: string) => void,
@@ -1202,6 +1265,17 @@ const 创建SSE文本处理器 = (
 
         if (!sawSseFrame) {
             throw new Error('Stream response did not contain text/event-stream data frames');
+        }
+
+        // [修复] 上游返回 HTTP 200 但零正文增量时，finish_reason 是唯一能说明"为什么没有正文"的信号。
+        // 典型场景：Gemini 系上游（官方/兼容层/中转）命中安全策略时返回 200 + 空 candidates +
+        // finish_reason=SAFETY（官方文档明确 "Candidate.content is empty if content filters block
+        // the output"）；酒馆预设携带的越狱提示词/世界书比项目原生提示词更容易触发该类拦截，
+        // 玩家侧表现就是"只有用酒馆预设才出现、重试也无效"。
+        // 旧实现把所有空响应一律报成笼统的「模型返回了空内容」，玩家拿不到真实原因。
+        if (!accumulated.trim() && lastFinishReason) {
+            const 结束原因错误 = 构建空正文结束原因错误(lastFinishReason);
+            if (结束原因错误) throw 结束原因错误;
         }
 
         onStreamEnd?.({
@@ -1393,7 +1467,14 @@ const 解析SSE文本原生 = async (
                 }
 
                 if (event.type === 'done') {
-                    settleResolve(processor.完成());
+                    // [修复] 完成() 会因「零正文 + 异常 finish_reason」抛出语义化错误
+                    // （如上游安全策略拦截）。listener 回调里同步抛出的异常不会变成
+                    // Promise reject，必须显式 try 后走 settleReject。
+                    try {
+                        settleResolve(processor.完成());
+                    } catch (error) {
+                        settleReject(error);
+                    }
                     return;
                 }
 
