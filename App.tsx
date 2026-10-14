@@ -1075,10 +1075,17 @@ const App: React.FC = () => {
 
     // 进入游戏态后，「刷新页面」不再作为动态 import 失败的自愈手段：
     // view 不持久化，刷新等于丢掉刚读进来的对局。退出游戏态则恢复自愈。
+    // ⚠️ 读档模态框（load 模式）打开期间也激活守卫：
+    // 「点继续游戏 → 打开存档列表 → 选中存档读取 → setView('game')」整段流程里，
+    // setView 之后、本 effect 重跑之前存在渲染窗口，此时任何懒 chunk 加载失败
+    // 只要走刷新自愈就会把玩家踢回主页（iOS Safari chunk 失败率最高，
+    // 历史上多发「一进存档就刷新」）。从打开读档列表起就激活守卫可消除该窗口；
+    // 玩家取消读档关闭列表时 effect 重跑，守卫随之恢复。
     React.useEffect(() => {
-        setLazyImportInGameActive(state.view === 'game');
+        const 读档流程进行中 = safeShowSaveLoad.show && safeShowSaveLoad.mode === 'load';
+        setLazyImportInGameActive(state.view === 'game' || 读档流程进行中);
         return () => setLazyImportInGameActive(false);
-    }, [state.view]);
+    }, [state.view, safeShowSaveLoad.show, safeShowSaveLoad.mode]);
 
     React.useEffect(() => {
         if (state.view !== 'game' || typeof window === 'undefined') return;
@@ -1108,11 +1115,17 @@ const App: React.FC = () => {
 
         const warmup = () => {
             if (cancelled || preloadTargets.length === 0) return;
-            const priorityCount = mobile ? 5 : 9;
+            // iOS Safari 进场降峰：读档刚把整个存档灌进内存、游戏界面正在首绘，
+            // 此刻压入过多并发 chunk 请求会叠加 CPU/网络/内存峰值
+            // （iOS Safari 对进场峰值最敏感，历史上多发「一进存档就刷新」）。
+            // 检测到 iOS 后整体推迟 1.2s、优先批从 5 个减到 2 个，让界面先稳定。
+            const iOS设备 = /iP(hone|ad|od)/.test(navigator.userAgent || '');
+            const priorityCount = iOS设备 ? 2 : (mobile ? 5 : 9);
+            const baseDelay = iOS设备 ? 1200 : 0;
             preloadTargets.forEach((target, index) => {
-                const delay = index < priorityCount
+                const delay = baseDelay + (index < priorityCount
                     ? 240 + index * 140
-                    : 1800 + (index - priorityCount) * 320;
+                    : 1800 + (index - priorityCount) * 320);
                 window.setTimeout(() => {
                     if (cancelled) return;
                     void target.preload?.().catch((error) => {

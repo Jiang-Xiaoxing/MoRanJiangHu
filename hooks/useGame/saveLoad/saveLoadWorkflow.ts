@@ -260,6 +260,21 @@ export const 创建存读档工作流 = (deps: 存档编排工作流依赖) => {
             id: save?.id,
             elapsedMs: Date.now() - startAt
         });
+        // 进场后内存曲线快照：iOS Safari「一进存档就刷新」疑为内存峰值导致
+        // WebKit 杀标签页重载（表现为页面自己刷新、view 归零回主页）。
+        // 在进场后 2s / 8s 各记一条；若 Safari 真的杀页面，这些 trace 会中断，
+        // 中断点本身就是证据。trace 默认关闭，不影响正常玩法性能。
+        if (typeof window !== 'undefined') {
+            [2000, 8000].forEach((delayMs) => {
+                window.setTimeout(() => {
+                    recordSaveLoadTrace('workflow.loadGame.afterEnter', {
+                        id: save?.id,
+                        delayMs,
+                        historyCount: Array.isArray(save.历史记录) ? save.历史记录.length : 0
+                    });
+                }, delayMs);
+            });
+        }
     };
 
     return {

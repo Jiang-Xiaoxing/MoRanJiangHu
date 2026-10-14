@@ -52,6 +52,25 @@ const getPerformanceMemory = (): Record<string, number> | undefined => {
     };
 };
 
+/**
+ * 设备画像：iOS Safari 读档刷新类问题的定位关键。
+ * iOS 不暴露 performance.memory / deviceMemory，只能靠 UA + 并发数推断机型档次，
+ * 因此在每条 trace 上携带，玩家反馈时无需再追问设备信息。
+ */
+const 采集设备画像 = (): Record<string, unknown> => {
+    if (typeof navigator === 'undefined' || !navigator) return {};
+    const ua = String(navigator.userAgent || '');
+    const isIOS = /iP(hone|ad|od)/.test(ua) || (/Macintosh/.test(ua) && (navigator as any).maxTouchPoints > 1);
+    const isSafari = /Safari/.test(ua) && !/Chrome|Chromium|Edg|OPR|SamsungBrowser/.test(ua);
+    return {
+        platform: isIOS ? 'ios' : (/Android/i.test(ua) ? 'android' : 'desktop'),
+        safari: isSafari,
+        cores: Number((navigator as any).hardwareConcurrency) || 0,
+        deviceMemoryGb: Number((navigator as any).deviceMemory) || 0,
+        touchPoints: Number((navigator as any).maxTouchPoints) || 0
+    };
+};
+
 const sanitizeTraceValue = (value: unknown, depth = 0): unknown => {
     if (value === null || value === undefined) return value;
     if (typeof value === 'number' || typeof value === 'boolean') return value;
@@ -112,6 +131,7 @@ export const recordSaveLoadTrace = (stage: string, payload: TracePayload = {}): 
     const entry = sanitizeTraceValue({
         at: new Date().toISOString(),
         stage,
+        device: 采集设备画像(),
         memory: getPerformanceMemory(),
         ...payload
     }) as Record<string, unknown>;

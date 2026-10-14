@@ -91,11 +91,17 @@ describe('预热路径不得触发整页刷新', () => {
         );
     });
 
-    it('App.tsx 必须随 view 同步游戏态标记', () => {
+    it('App.tsx 必须随 view 与读档流程同步游戏态标记', () => {
         const 源码 = 读源码('App.tsx');
+        // 游戏态必须激活守卫。
         expect(源码).toMatch(
-            /setLazyImportInGameActive\(\s*state\.view === 'game'\s*\)/
+            /setLazyImportInGameActive\(\s*state\.view === 'game'/
         );
+        // 读档模态框（load 模式）打开期间也必须激活守卫：
+        // 「点继续游戏 → 打开存档列表 → 选中读取 → setView('game')」之间
+        // 存在渲染窗口，此时 chunk 失败若走刷新自愈会把玩家踢回主页
+        // （iOS Safari「一进存档就刷新」的候选根因之一）。
+        expect(源码).toMatch(/safeShowSaveLoad\.mode === 'load'/);
     });
 
     it('预热失败只记日志，不弹刷新提示', () => {

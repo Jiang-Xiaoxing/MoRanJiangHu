@@ -42,7 +42,11 @@ describe('视口尺寸变化防抖与断点滞回', () => {
     it('预热 effect 不再依赖 isMobile，避免翻转时整批重新预热', () => {
         // isMobile 通过 ref 读取
         expect(app).toMatch(/const mobile = isMobileRef\.current;/);
-        expect(app).toMatch(/const priorityCount = mobile \? 5 : 9;/);
+        // priorityCount 必须由 ref 读取的 mobile 推导（不直接捕获 isMobile state）。
+        // 不写死 5/9 具体值与前缀，允许叠加 iOS 进场降峰等平台分支。
+        expect(app).toMatch(/const priorityCount =[^;]*mobile \?/);
+        // iOS 进场降峰分支必须保留（iP+hone=iPhone、iP+ad=iPad、iP+od=iPod）
+        expect(app).toMatch(/iP\(hone\|ad\|od\)/);
 
         // 必须定位到「预热 effect 本身」的依赖数组再断言。
         // 若只在整文件里搜 `}, [state.view]);`，别的 effect 恰好命中就会让测试
