@@ -166,12 +166,9 @@ export const 规范化文本补全消息链 = (
     // HTTP 200 空内容；酒馆 instruct 序列错标、post_history 注入都可能造成尾部 system。
     // 把尾部 system 降为 user（prefix 消息除外——它是生成引导，不是待回复输入）。
     if (tailSystemToUser) {
-        for (let index = normalized.length - 1; index >= 0; index -= 1) {
-            const tail = normalized[index];
-            if (tail.role === 'system' && tail.prefix !== true) {
-                tail.role = 'user';
-            }
-            break;
+        const tail = normalized[normalized.length - 1];
+        if (tail && tail.role === 'system' && tail.prefix !== true) {
+            tail.role = 'user';
         }
     }
 
