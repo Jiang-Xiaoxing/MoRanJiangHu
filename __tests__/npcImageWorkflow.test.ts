@@ -133,3 +133,40 @@ describe('npc image workflow age constraints', () => {
         expect(constraint).toContain('日常默认不应主动露出');
     });
 });
+
+describe('npc image workflow young age prefix regression', () => {
+    // 玩家反馈：18/20/32 岁年轻女性角色的提示词有时被加上 elderly appearance, aged face。
+    // 根因：首次判定 young_adult 生成“不得仅因真实年龄称为老妇、老妪或老太婆”约束，
+    // 二次判断把约束放回人物描述后，老态关键词匹配读到“老妇”却没识别“不得”，误入 elderly 分支。
+    for (const 年龄 of [18, 20, 32]) {
+        it(`keeps a ${年龄}-year-old female NPC young when the derived constraint is fed back`, () => {
+            const baseData = {
+                性别: '女',
+                年龄,
+                视觉年龄约束: '真实年龄只代表经历；外貌按青年成年人描写。；不得仅因真实年龄称为老妇、老妪或老太婆。',
+                视觉年龄正向提示词: 'adult, young adult, youthful adult face'
+            };
+            const constraint = 构建词组转化性别硬约束('女', 年龄, baseData);
+
+            // 正向区必须是青年/成熟成年，不能出现 elderly 分支的“elderly appearance, aged face”组合
+            expect(constraint).toContain('开头必须包含：1woman, female, adult woman, feminine face, female body');
+            expect(constraint).not.toContain('elderly appearance, aged face');
+            expect(constraint).not.toContain('adult, elderly');
+            // 约束原文仍会下发给词组转化器
+            expect(constraint).toContain('不得仅因真实年龄称为老妇');
+        });
+    }
+
+    it('uses the custom fixed gender prefix when configured', () => {
+        const constraint = 构建词组转化性别硬约束('女', 20, { 性别: '女', 年龄: 20 }, '1woman, female, solo, woman');
+
+        expect(constraint).toContain('1woman, female, solo, woman');
+        expect(constraint).not.toContain('adult woman');
+    });
+
+    it('keeps built-in fixed gender prefix when no custom prefix is configured', () => {
+        const constraint = 构建词组转化性别硬约束('女', 20, { 性别: '女', 年龄: 20 });
+
+        expect(constraint).toContain('1woman, female, adult woman, feminine face, female body');
+    });
+});

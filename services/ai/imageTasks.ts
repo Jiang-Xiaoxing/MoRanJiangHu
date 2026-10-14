@@ -3154,7 +3154,8 @@ export const buildNpcDirectImagePrompt = (
         appearance: 读取NPC字段文本(source, '外貌'),
         body: 读取NPC字段文本(source, '身材'),
         clothing: 读取NPC字段文本(source, '衣着'),
-        bio: [读取NPC字段文本(source, '简介'), 读取NPC字段文本(source, '核心性格特征'), 读取NPC字段文本(source, '性格'), 读取NPC字段文本(source, '视觉年龄约束')].filter(Boolean).join('；'),
+        // 视觉年龄约束 是上一轮解析产出的指令文本，不作为年龄判断输入（避免回灌误判 elderly）
+        bio: [读取NPC字段文本(source, '简介'), 读取NPC字段文本(source, '核心性格特征'), 读取NPC字段文本(source, '性格')].filter(Boolean).join('；'),
         race: 读取NPC字段文本(source, '种族'),
         species: 读取NPC字段文本(source, '血统'),
         additionalTexts: [读取NPC字段文本(source, '灵根'), 读取NPC字段文本(source, '灵根资质')]

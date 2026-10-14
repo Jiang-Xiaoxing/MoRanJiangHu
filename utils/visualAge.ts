@@ -67,9 +67,15 @@ const 视觉年龄分段中文名映射: Record<视觉年龄分段, string> = {
     elderly: '老年'
 };
 
-const 强老态正则 = /老妪|老妇|老太婆|老太太|垂暮|白发苍苍|皱纹(?:深重|纵横)?|面容枯槁|鸡皮鹤发|寿元将尽|行将就木|衰老诅咒|急速衰老|苍老面容|老者面容/u;
+const 强老态正则 = /老妪|老妇|老太婆|老太太|垂暮|白发苍苍|皱纹(?:深重|纵横)?|面容枯槁|鸡皮鹤发|寿元将尽|行将就木|衰老诅咒|急速衰老|苍老面容|老者面容/gu;
 const 老态弱提示正则 = /老态/u;
 const 否定老态正则 = /无(?:明显)?老态|不见老态|并无老态|没有老态|未显老态/u;
+// 老态关键词的否定前缀：同一句子内、关键词之前出现这些词时，该处老态描述是“被否认的描述”，
+// 不能作为老年外貌证据。典型场景：程序生成的约束“不得仅因真实年龄称为老妇、老妪或老太婆”
+// 被二次判断回灌进人物描述后，字面匹配会误判 elderly。
+const 老态否定词正则 = /不得|不能|不可以|禁止|切勿|勿|并非|不是|不会|不应|不准|无须|无需|不必|避免|防止|并未|并无|未有|未曾|不曾/u;
+const 句子分隔正则 = /[。！？!?；;\n]+/u;
+const 否定回溯窗口字数 = 24;
 const 明确幼态正则 = /幼童外貌|孩童外貌|儿童外貌|幼女外貌|幼男外貌|childlike appearance|幼童|孩童|儿童|萝莉体型|正太体型/u;
 const 明确少年正则 = /少年外貌|少女外貌|teen(?:age)? appearance|青春期外貌|青涩少年|青涩少女/u;
 const 明确年轻正则 = /青年外貌|年轻外貌|二十岁上下|二十来岁|年轻貌美|年轻英俊|young adult|young-looking adult/u;
@@ -77,7 +83,7 @@ const 明确成熟正则 = /成熟外貌|成熟青年|三十岁上下|三十来�
 const 明确中年正则 = /中年外貌|四十岁上下|五十岁上下|middle-aged/u;
 const 驻颜长生正则 = /驻颜|返老还童|不老|长生|青春药剂|身体机能保持巅峰|血统强化|基因强化|青春永驻|寿元悠长/u;
 const 超凡强化正则 = /修士|修仙|修真|金丹|元婴|化神|炼虚|合体|渡劫|大乘|飞升|轮回者|主神|觉醒者|法师|术士|圣职|牧师|血统|异能|超凡|魔力|神格|半神|精灵|妖族|龙族|血族/u;
-const 明确衰败正则 = /寿元枯竭|油尽灯枯|病骨支离|衰败不堪|风烛残年|残年败相/u;
+const 明确衰败正则 = /寿元枯竭|油尽灯枯|病骨支离|衰败不堪|风烛残年|残年败相/gu;
 
 const 长寿种族倍率表: Array<{ pattern: RegExp; factor: number }> = [
     { pattern: /精灵|elf|高等精灵|月精灵/u, factor: 7 },
@@ -161,8 +167,29 @@ const 读取长寿种族倍率 = (combinedText: string): number => {
     return 1;
 };
 
+const 匹配是否被否定 = (句子: string, 匹配索引: number): boolean => {
+    const 窗口起点 = Math.max(0, 匹配索引 - 否定回溯窗口字数);
+    return 老态否定词正则.test(句子.slice(窗口起点, 匹配索引));
+};
+
+// 逐句扫描：只有“未被否定”的匹配才算证据。
+// 带 g 标志的正则通过 exec 循环逐条匹配，使用前必须重置 lastIndex。
+const 文本含非否定的匹配 = (text: string, pattern: RegExp): boolean => {
+    if (!text) return false;
+    for (const 句子 of text.split(句子分隔正则)) {
+        if (!句子) continue;
+        pattern.lastIndex = 0;
+        let match: RegExpExecArray | null;
+        while ((match = pattern.exec(句子)) !== null) {
+            if (!匹配是否被否定(句子, match.index)) return true;
+            if (match.index === pattern.lastIndex) pattern.lastIndex += 1;
+        }
+    }
+    return false;
+};
+
 const 文本含明确老态 = (text: string): boolean => (
-    强老态正则.test(text) || (老态弱提示正则.test(text) && !否定老态正则.test(text))
+    文本含非否定的匹配(text, 强老态正则) || (老态弱提示正则.test(text) && !否定老态正则.test(text))
 );
 
 const 解析明确外观年龄 = (
@@ -369,7 +396,7 @@ export const 解析视觉年龄 = (context: 视觉年龄上下文): 视觉年龄
     const combinedText = texts.join(' ');
     const explicit = 解析明确外观年龄(context.explicitVisualAge);
     const modeModel = 判断题材衰老模型(context, combinedText);
-    const hasExplicitElderly = 文本含明确老态(combinedText) || 明确衰败正则.test(combinedText);
+    const hasExplicitElderly = 文本含明确老态(combinedText) || 文本含非否定的匹配(combinedText, 明确衰败正则);
     const hasExplicitChild = 明确幼态正则.test(combinedText);
     const hasExplicitTeen = 明确少年正则.test(combinedText);
     const hasPreservation = 驻颜长生正则.test(combinedText);

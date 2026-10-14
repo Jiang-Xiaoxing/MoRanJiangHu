@@ -439,6 +439,12 @@ export interface 功能模型占位配置结构 {
     自动生图子类型启用半身?: boolean;
     自动生图子类型启用私密部位?: boolean;
     随机种子生成?: boolean; // ComfyUI 每次生图使用随机 seed 而非固定 0（默认开启）；PNG 复刻参数里的显式 seed 仍优先
+    // NPC 生图固定性别前缀自定义：留空使用内置默认（如成年女性 "1woman, female, adult woman, feminine face, female body"）；
+    // 填写后按性别整体替换内置固定前缀（英文 tags，逗号分隔），年龄感提示词仍会追加在后。
+    NPC生图固定前缀自定义_女?: string;
+    NPC生图固定前缀自定义_男?: string;
+    NPC生图固定前缀自定义_男娘?: string;
+    NPC生图固定前缀自定义_扶她?: string;
 
     生图配置档列表?: 生图配置档结构[];
     当前NPC生图配置档ID?: string;

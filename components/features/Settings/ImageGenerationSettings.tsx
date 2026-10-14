@@ -2330,6 +2330,58 @@ const ImageGenerationSettings: React.FC<Props> = ({ settings, onSave }) => {
             </div>
 
             <div className={卡片样式}>
+                <div>
+                    <div className="text-base font-bold text-cyan-200">NPC 固定性别前缀自定义</div>
+                    <div className="mt-1 text-xs leading-6 text-cyan-100/70">
+                        NPC 生图会在画师串前固定加入一段性别前缀（成年女性默认 <span className="font-mono">1woman, female, adult woman, feminine face, female body</span>）。
+                        填写后按性别整体替换内置前缀，方便按自己的画师串搭配调整；留空使用内置默认。年龄感提示词（如 young adult）仍会照常追加在后。
+                    </div>
+                </div>
+                <div className="mt-3 grid gap-4 md:grid-cols-2">
+                    <div className="space-y-2">
+                        <label className="text-sm font-bold text-cyan-200">女性前缀</label>
+                        <textarea
+                            value={form.功能模型占位.NPC生图固定前缀自定义_女 || ''}
+                            onChange={(e) => updatePlaceholder('NPC生图固定前缀自定义_女', e.target.value)}
+                            rows={2}
+                            placeholder="留空使用内置默认：1woman, female, adult woman, feminine face, female body"
+                            className="w-full rounded-md border-2 border-transparent bg-black/50 p-3 text-white outline-none transition-all focus:border-cyan-400 resize-y"
+                        />
+                    </div>
+                    <div className="space-y-2">
+                        <label className="text-sm font-bold text-cyan-200">男性前缀</label>
+                        <textarea
+                            value={form.功能模型占位.NPC生图固定前缀自定义_男 || ''}
+                            onChange={(e) => updatePlaceholder('NPC生图固定前缀自定义_男', e.target.value)}
+                            rows={2}
+                            placeholder="留空使用内置默认：1man, male, adult man, masculine face, male body"
+                            className="w-full rounded-md border-2 border-transparent bg-black/50 p-3 text-white outline-none transition-all focus:border-cyan-400 resize-y"
+                        />
+                    </div>
+                    <div className="space-y-2">
+                        <label className="text-sm font-bold text-cyan-200">男娘前缀</label>
+                        <textarea
+                            value={form.功能模型占位.NPC生图固定前缀自定义_男娘 || ''}
+                            onChange={(e) => updatePlaceholder('NPC生图固定前缀自定义_男娘', e.target.value)}
+                            rows={2}
+                            placeholder="留空使用内置默认：1boy, femboy, passing as female, ..."
+                            className="w-full rounded-md border-2 border-transparent bg-black/50 p-3 text-white outline-none transition-all focus:border-cyan-400 resize-y"
+                        />
+                    </div>
+                    <div className="space-y-2">
+                        <label className="text-sm font-bold text-cyan-200">扶她前缀</label>
+                        <textarea
+                            value={form.功能模型占位.NPC生图固定前缀自定义_扶她 || ''}
+                            onChange={(e) => updatePlaceholder('NPC生图固定前缀自定义_扶她', e.target.value)}
+                            rows={2}
+                            placeholder="留空使用内置默认：1woman, futanari, dickgirl, ..."
+                            className="w-full rounded-md border-2 border-transparent bg-black/50 p-3 text-white outline-none transition-all focus:border-cyan-400 resize-y"
+                        />
+                    </div>
+                </div>
+            </div>
+
+            <div className={卡片样式}>
                 <div className="flex items-center justify-between gap-3">
                     <div>
                         <div className="text-base font-bold text-cyan-200">独立转化器模型</div>
