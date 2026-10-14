@@ -288,6 +288,14 @@ export const 是否GLM接口配置 = (apiConfig: 当前可用接口结构): bool
     return false;
 };
 
+// [修复] disable_thinking 是部分 OpenAI 兼容中转为 GLM/DeepSeek 系模型提供的非标准扩展字段，
+// 只对原本就设计了"思考开关"（DeepSeek策略/GLM策略）的配置发送。
+// 官方 Gemini 的 OpenAI 兼容端点（generativelanguage.googleapis.com/v1beta/openai）会做严格
+// proto 校验，未知字段直接 400：Unknown name "disable_thinking": Cannot find field.，
+// 导致自带官方 key 的 Gemini 玩家从开局主剧情起全部请求失败（酒馆等客户端不发该字段所以正常）。
+const 支持禁用思考参数 = (apiConfig: 当前可用接口结构): boolean =>
+    是否GLM接口配置(apiConfig) || 是否DeepSeek模型配置(apiConfig);
+
 const 解析请求协议类型 = (apiConfig: 当前可用接口结构): 请求协议类型 => {
     if (是否DeepSeek原生接口配置(apiConfig)) return 'deepseek';
     if (是否GLM接口配置(apiConfig)) return 'glm';
@@ -1924,7 +1932,7 @@ const 请求OpenAI家族文本 = async (
         if (responseFormat === 'json_object') {
             body.response_format = { type: 'json_object' };
         }
-        if (requestOptions?.disableThinking === true) {
+        if (requestOptions?.disableThinking === true && 支持禁用思考参数(apiConfig)) {
             body.disable_thinking = true;
         }
         const requestHeaders = 构建OpenAI家族请求头(apiConfig);

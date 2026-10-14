@@ -444,6 +444,60 @@ describe('chatCompletionClient Claude compatible message normalization', () => {
         ]);
     });
 
+    it('does not send the non-standard disable_thinking field to official Gemini endpoints', async () => {
+        const fetchMock = vi.spyOn(globalThis, 'fetch')
+            .mockResolvedValueOnce(new Response(JSON.stringify({
+                choices: [{ message: { content: 'gemini-ok' } }]
+            }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' }
+            }));
+
+        const result = await 请求模型文本({
+            ...baseConfig,
+            供应商: 'gemini',
+            baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+            model: 'gemini-4-argon'
+        }, [{ role: 'user', content: 'ping' }], {
+            temperature: 0.7,
+            signal: undefined,
+            streamOptions: { stream: false },
+            errorDetailLimit: 500,
+            disableThinking: true,
+            stripReasoning: true
+        });
+
+        expect(result).toBe('gemini-ok');
+        const requestBody = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body));
+        expect(requestBody.disable_thinking).toBeUndefined();
+    });
+
+    it('still sends disable_thinking for GLM configurations that support the field', async () => {
+        const fetchMock = vi.spyOn(globalThis, 'fetch')
+            .mockResolvedValueOnce(new Response(JSON.stringify({
+                choices: [{ message: { content: 'glm-ok' } }]
+            }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' }
+            }));
+
+        await 请求模型文本({
+            ...baseConfig,
+            供应商: 'zhipu',
+            baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+            model: 'glm-4.6'
+        }, [{ role: 'user', content: 'ping' }], {
+            temperature: 0.7,
+            signal: undefined,
+            streamOptions: { stream: false },
+            errorDetailLimit: 500,
+            disableThinking: true
+        });
+
+        const requestBody = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body));
+        expect(requestBody.disable_thinking).toBe(true);
+    });
+
     it('routes Gemini Deep Research models through the Interactions API', async () => {
         const fetchMock = vi.spyOn(globalThis, 'fetch')
             .mockResolvedValueOnce(new Response(JSON.stringify({
