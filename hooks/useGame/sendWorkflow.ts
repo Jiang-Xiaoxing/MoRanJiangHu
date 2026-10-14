@@ -1846,6 +1846,11 @@ export const 执行主剧情发送工作流 = async (
             maxTokens: activeApi?.maxTokens,
             inputTokens,
             messageCount: orderedMessages.length,
+            // 酒馆预设模式 + 消息链尾部角色：定位「200 空内容」类问题时，
+            // 尾部为 system（instruct 序列错标）与酒馆提示词触发上游审核是两大嫌疑，
+            // 这两个字段能让诊断日志直接区分。
+            tavernPresetMode: tavernPresetModeEnabled === true,
+            lastMessageRole: orderedMessages[orderedMessages.length - 1]?.role || '',
             validateTagCompleteness: runtimeGameConfig.启用标签检测完整性 === true,
             enableTagRepair: runtimeGameConfig.启用标签修复 !== false,
             requireActionOptionsTag: runtimeGameConfig.启用行动选项 !== false,

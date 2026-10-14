@@ -2276,7 +2276,9 @@ export const generateStoryResponse = async (
         : [];
     const orderedMessages = 规范化文本补全消息链(orderedMessagesRaw, {
         保留System: true,
-        合并同角色: false
+        合并同角色: false,
+        // 尾部 system 会让部分上游返回 200 空内容（酒馆 instruct 错标/post_history 注入的已知坑）
+        尾部System转User: true
     });
 
     if (orderedMessages.length > 0) {
