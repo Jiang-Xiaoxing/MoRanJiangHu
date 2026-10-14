@@ -648,6 +648,7 @@ export const 执行NPC生图工作流 = async (
             画师串: 前置正向提示词,
             额外要求,
             尺寸,
+            性别固定前缀来源,
             进度阶段: 'generating',
             进度文本: shouldUsePromptTransformer ? '词组转换完成，正在调用图片模型生成图片。' : '角色资料整理完成，正在调用图片模型生成图片。'
         }));
@@ -830,6 +831,7 @@ export const 执行NPC生图工作流 = async (
             画师串: 前置正向提示词,
             额外要求,
             尺寸,
+            性别固定前缀来源,
             图片URL: localizedImageResult.图片URL,
             本地路径: localizedImageResult.本地路径,
             错误信息: undefined,
@@ -897,6 +899,7 @@ export const 执行NPC生图工作流 = async (
             画风,
             画师串: 前置正向提示词,
             额外要求,
+            性别固定前缀来源,
             错误信息: errorMessage,
             调试链路,
             进度阶段: 'failed',

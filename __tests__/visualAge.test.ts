@@ -44,6 +44,38 @@ describe('visualAge', () => {
         expect(result.positiveTags).not.toContain('aged face');
     });
 
+    it('does not treat common no-wrinkle wording as elderly evidence', () => {
+        const result = 解析视觉年龄({
+            actualAge: 20,
+            appearance: '没有皱纹，容貌清秀，肌肤饱满。'
+        });
+
+        expect(result.visualAgeBand).toBe('young_adult');
+        expect(result.positiveTags).not.toContain('elderly appearance');
+    });
+
+    it('keeps affirmative old-age descriptions after a contrast', () => {
+        // “不是少女，而是老妇”：否定词后出现转折，老妇是肯定描述。
+        const result = 解析视觉年龄({
+            actualAge: 70,
+            appearance: '她不是少女，而是老妇。'
+        });
+
+        expect(result.visualAgeBand).toBe('elderly');
+        expect(result.positiveTags).toContain('elderly appearance');
+    });
+
+    it('keeps real elderly evidence introduced by 不得不', () => {
+        // “不得不”是“只能”之意，后面的老态是肯定描述。
+        const result = 解析视觉年龄({
+            actualAge: 80,
+            appearance: '众人不得不承认自己已白发苍苍。'
+        });
+
+        expect(result.visualAgeBand).toBe('elderly');
+        expect(result.positiveTags).toContain('elderly appearance');
+    });
+
     it('does not upgrade young characters when the derived age constraint is fed back', () => {
         const result = 解析视觉年龄({
             actualAge: 32,
