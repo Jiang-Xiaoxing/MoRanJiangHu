@@ -53,6 +53,8 @@ import {
     type EPUB修复阶段
 } from '../../../services/novelDecompositionEpubRepairWorkflow';
 import { 从原始文本提取章节, 根据章节生成分段列表, 聚合小说拆分数据集 } from '../../../services/novelDecompositionPipeline';
+import { 读取文本文件自动编码 } from '../../../services/textEncoding';
+import { 规范化标题 } from '../../../services/novelStructureHeuristics';
 import {
     下载小说分解创意工坊模块,
     编辑小说分解创意工坊模块,
@@ -911,7 +913,14 @@ const NovelDecompositionSettings: React.FC<Props> = ({ settings, onSave, request
         const rawLength = rawText.trim().length;
         const chapterCount = previewChapters.length;
         const titleSamples = previewChapters.slice(0, 8).map((chapter: any) => String(chapter?.标题 || '').trim()).filter(Boolean);
-        const numberedTitleCount = titleSamples.filter((title) => /^第[0-9零一二三四五六七八九十百千万两〇○]+[章节回卷部篇册季集辑节话幕]/u.test(title)).length;
+        // ⚠️ 标题前缀会被 `规范化标题` / `清理章节编号文本` 剥掉（"第一章 江湖血路" → "江湖血路"），
+        //    所以这里除了匹配原始格式，还要把"被剥过前缀"的标题也算作中文章回标题，否则会误报「未识别」。
+        const 中文数字 = '[0-9零一二三四五六七八九十百千万两〇○壹贰叁肆伍陆柒捌玖拾佰仟]';
+        const numberedTitleCount = titleSamples.filter((title) => (
+            new RegExp(`^第${中文数字}+[章节回卷部篇册季集辑节话幕]`, 'u').test(title)
+            || new RegExp(`^[章节回卷部篇册季集辑节话幕]${中文数字}+`, 'u').test(title)
+            || 规范化标题(title) !== title
+        )).length;
         const numericTitleCount = titleSamples.filter((title) => /^\d{1,4}[.)、\s]/u.test(title)).length;
         const dividerTitleCount = titleSamples.filter((title) => /^(chapter|chap\.|卷|幕|序章|楔子|尾声)/iu.test(title)).length;
         const mode = numberedTitleCount >= Math.max(1, Math.ceil(titleSamples.length * 0.45))
@@ -934,8 +943,22 @@ const NovelDecompositionSettings: React.FC<Props> = ({ settings, onSave, request
             issues.push('当前数据集没有原始正文。');
             suggestions.push('重新导入 TXT / EPUB，或导入带原文的分解分享包。');
         }
-        if (rawLength > 0 && chapterCount <= 1) {
-            issues.push('正文只识别出 1 章或没有章节边界。');
+        // ⚠️ 只有在**确实有乱码证据**时才提示编码问题。正常 UTF-8 文本只识别出 1 章时，
+        //    归因到编码会把玩家引向错误方向（实测这是本项目真实踩过的坑）。
+        //    注意：U+FFFD 阈值只是编码正确性的**充分信号之一**，不是充分条件——
+        //    某些错误解码不产生替换字符，所以文案必须用「可能」这类条件表述。
+        const mojibakeCount = (rawText.match(/\uFFFD/g) || []).length;
+        const 疑似编码不匹配 = rawLength > 0
+            && (mojibakeCount >= 20 || mojibakeCount / rawLength > 0.002);
+        if (疑似编码不匹配) {
+            issues.push('正文疑似包含乱码，可能影响章节标题匹配。');
+            suggestions.push('请检查文件编码（GBK/GB18030/UTF-8）后重新导入；若仍有乱码，请把文件反馈给我们。');
+        }
+        if (rawLength > 0 && chapterCount === 0) {
+            issues.push('没有识别出任何章节边界，正文被当作一整段。');
+            suggestions.push('检查标题是否独立成行，并尽量使用“第1章 标题”或“第一章 标题”格式。');
+        } else if (rawLength > 0 && chapterCount === 1) {
+            issues.push('全文只识别出 1 章，章节标题基本没被匹配到。');
             suggestions.push('检查标题是否独立成行，并尽量使用“第1章 标题”或“第一章 标题”格式。');
         }
         if (chapterCount > 1 && shortRatio > 0.35) {
@@ -1150,14 +1173,8 @@ const NovelDecompositionSettings: React.FC<Props> = ({ settings, onSave, request
         .filter(Boolean)
         .join('\n\n');
 
-    const 读取UTF8文本文件 = async (file: File): Promise<string> => (
-        new Promise<string>((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '');
-            reader.onerror = () => reject(reader.error || new Error('读取文件失败'));
-            reader.readAsText(file, 'utf-8');
-        })
-    );
+    // ⚠️ 必须走编码自动探测（GBK 小说的章节标题在强制 UTF-8 下会全变乱码）
+    const 读取小说文本文件 = 读取文本文件自动编码;
 
     const persistDatasetWithSnapshots = async (
         dataset: typeof selectedDataset extends null ? never : NonNullable<typeof selectedDataset>,
@@ -1413,7 +1430,7 @@ const NovelDecompositionSettings: React.FC<Props> = ({ settings, onSave, request
         if (!file) return;
 
         try {
-            const text = await 读取UTF8文本文件(file);
+            const text = await 读取小说文本文件(file);
             const baseName = file.name.replace(/\.[^.]+$/, '').trim() || `导入作品 ${datasetsCount + 1}`;
             await handleImportNovelSource({
                 title: baseName,
