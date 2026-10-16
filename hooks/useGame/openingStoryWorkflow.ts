@@ -1,3 +1,4 @@
+import { naturalProseSettingsService } from '../../services/naturalProseSettingsService';
 import { buildNpcTemplateNameContext } from '../../services/npcTemplateNameContext';
 import { 校验响应未命中模板姓名黑名单 } from './sendWorkflow';
 import * as textAIService from '../../services/ai/text';
@@ -677,6 +678,7 @@ export const 执行开场剧情生成工作流 = async (
     let openingInputTokens = 0;
 
     try {
+        const naturalProseSnapshot = await naturalProseSettingsService.load();
         const 写入或插入提示词 = (
             promptPool: 提示词结构[],
             promptId: string,
@@ -1201,6 +1203,7 @@ export const 执行开场剧情生成工作流 = async (
                         openingTavernPresetModeEnabled ? '' : openingCombinedExtraPrompt,
                         {
                             orderedMessages: openingMessagesForAttempt,
+                            naturalProse: naturalProseSnapshot,
                             enableCotInjection: openingCotPseudoEnabled,
                             leadingSystemPrompt: openingContext.contextPieces.AI角色声明,
                             styleAssistantPrompt: [openingPerspectivePrompt, openingStyleAssistantPrompt, openingRealWorldModePrompt].filter(Boolean).join('\n\n'),

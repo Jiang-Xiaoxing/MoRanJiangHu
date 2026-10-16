@@ -1,3 +1,4 @@
+import { NATURAL_PROSE_SETTINGS_KEY, normalizeNaturalProseSettings } from '../utils/naturalProse';
 
 import { 存档结构 } from '../types';
 import type { 题材模式类型, 游戏设置结构 } from '../models/system';
@@ -2864,7 +2865,9 @@ const 读取全部设置记录 = async (): Promise<设置存储记录[]> => {
 
 export const 保存设置 = async (key: string, value: any): Promise<void> => {
     const db = await 初始化数据库();
-    const persistedValue = await 外置化图片字段(value);
+    const persistedValue = key === NATURAL_PROSE_SETTINGS_KEY
+        ? normalizeNaturalProseSettings(value)
+        : await 外置化图片字段(value);
     const def = 获取设置项定义(key);
     return new Promise((resolve, reject) => {
         const transaction = db.transaction([SETTINGS_STORE], 'readwrite');

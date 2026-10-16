@@ -1,3 +1,4 @@
+import { buildNaturalProsePrompt, type NaturalProseSettings } from '../../utils/naturalProse';
 import { GameResponse, TavernCommand, 内置提示词条目结构 } from '../../types';
 import type { 当前可用接口结构 } from '../../utils/apiConfig';
 import type { 小说拆分数据集结构, 小说拆分角色档案结构, 小说拆分势力档案结构, 小说拆分地图地点档案结构, 小说拆分物品档案结构 } from '../../models/novelDecomposition';
@@ -218,6 +219,7 @@ export interface StoryStreamOptions {
 }
 
 export interface StoryRequestOptions {
+    naturalProse?: NaturalProseSettings;
     enableCotInjection?: boolean;
     cotPseudoHistoryPrompt?: string;
     orderedMessages?: 通用消息[];
@@ -2210,6 +2212,13 @@ export const generateStoryResponse = async (
     requestOptions?: StoryRequestOptions
 ): Promise<StoryResponseResult> => {
     if (!apiConfig.apiKey) throw new Error('Missing API Key');
+    // 在任何异步请求之前构造字符串快照；仅正文入口使用，独立AI任务不受影响。
+    const naturalProsePrompt = buildNaturalProsePrompt(requestOptions?.naturalProse);
+    const withNaturalProse = (messages: 通用消息[]): 通用消息[] => naturalProsePrompt
+        && !messages.some(message => message.content === naturalProsePrompt)
+        ? [{ role: 'system', content: naturalProsePrompt }, ...messages]
+        : messages;
+
 
     // 流式输出被上游提前关闭（常见于内容审核拦截，例如正文出现“娼妇”等词汇时上游直接掐断流）时，
     // 记录结束信息并给错误打上“流式意外终止”标记，供外层重试逻辑自动降级为非流式请求，
@@ -2308,7 +2317,7 @@ export const generateStoryResponse = async (
             ];
         })();
 
-        const rawText = await 请求模型文本(apiConfig, messagesWithRuntimeRequirements, {
+        const rawText = await 请求模型文本(apiConfig, withNaturalProse(messagesWithRuntimeRequirements), {
             temperature: 0.7,
             signal,
             streamOptions: 带结束回调的流式选项,
@@ -2403,7 +2412,7 @@ export const generateStoryResponse = async (
         合并同角色: false
     });
 
-    const rawText = await 请求模型文本(apiConfig, normalizedApiMessages, {
+    const rawText = await 请求模型文本(apiConfig, withNaturalProse(normalizedApiMessages), {
         temperature: 0.7,
         signal,
         streamOptions: 带结束回调的流式选项,

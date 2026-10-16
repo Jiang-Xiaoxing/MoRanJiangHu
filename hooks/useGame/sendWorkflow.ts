@@ -1,3 +1,4 @@
+import { naturalProseSettingsService } from '../../services/naturalProseSettingsService';
 import { buildNpcTemplateNameContext } from '../../services/npcTemplateNameContext';
 import type { NpcTemplateNameContext } from '../../utils/npcTemplateNamePolicy';
 import { 提取命中模板姓名黑名单 } from '../../utils/templateNameBlacklist';
@@ -1396,6 +1397,9 @@ export const 执行主剧情发送工作流 = async (
         deps.setShowSettings(true);
         return { cancelled: true };
     }
+    const naturalProseSnapshotPending = naturalProseSettingsService.load().then(
+        value => ({ value, error: undefined }), error => ({ value: undefined, error })
+    );
     const stageModelInfo = {
         recall: 构建队列阶段模型信息('剧情回忆', 获取剧情回忆接口配置(currentState.apiConfig), activeApi),
         polish: 构建队列阶段模型信息('文章优化', 获取文章优化接口配置(currentState.apiConfig), activeApi),
@@ -1756,6 +1760,9 @@ export const 执行主剧情发送工作流 = async (
     let 流式意外终止需降级非流式 = false;
 
     try {
+        const naturalProseLoaded = await naturalProseSnapshotPending;
+        if (naturalProseLoaded.error) throw naturalProseLoaded.error;
+        const naturalProseSnapshot = naturalProseLoaded.value;
         const recallContextActiveForMain = recallFeatureEnabled && Boolean(recallTag);
         // 场外对话（侧聊）暂存原文：主回合成功吸收后由 deps.清空场外对话暂存 清空。
         const 场外对话提示块 = 构建场外对话记录块(currentState.场外对话);
@@ -1952,6 +1959,7 @@ export const 执行主剧情发送工作流 = async (
                         extraPromptForService,
                         {
                             orderedMessages,
+                            naturalProse: naturalProseSnapshot,
                             enableCotInjection: runtimeCotPseudoEnabled,
                             leadingSystemPrompt: builtContext.contextPieces.AI角色声明,
                             styleAssistantPrompt: tavernPresetModeEnabled
