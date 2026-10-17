@@ -24,6 +24,8 @@ import { applyStateCommand, normalizeStateCommandKey } from '../../utils/stateHe
 import { 规范化任务列表自动结算 } from '../../utils/taskCompat';
 import { 结算已完成任务奖励 } from '../../utils/taskRewards';
 import { sanitizeInventoryCommand } from './inventoryCommandGuard';
+import { isDisposableReviewCleanup } from './variableReviewCleanup';
+import { approvedEquipmentReviewMoves, isApprovedEquipmentReviewCommand } from './variableReviewEquipment';
 import { 姓名含已知中文姓氏 } from '../../utils/chineseName';
 import { 合并保留既有NPC列表, 命令存在社交删除风险, 是否占位名, 查找姓名保护对应NPC, 检测NPC姓名改写风险命令 } from '../../utils/npcRetentionGuard';
 import { 提取NPC境界回退风险命令索引 } from '../../utils/npcRealmRegressionGuard';
@@ -1640,6 +1642,7 @@ export const 执行响应命令处理 = (
 ): 响应命令处理状态 => {
     const reviewApply = options?.executionMode === 'review-apply';
     const reviewPreview = options?.executionMode === 'review-preview' || reviewApply;
+    const equipmentReviewMoves = reviewPreview ? approvedEquipmentReviewMoves({ ...currentState, ...baseState }, response.tavern_commands || []) : [];
     if (reviewPreview) {
         currentState = JSON.parse(JSON.stringify(currentState));
         baseState = baseState ? JSON.parse(JSON.stringify(baseState)) : undefined;
@@ -1703,10 +1706,17 @@ export const 执行响应命令处理 = (
             let safeCmd: any = cmd;
             // 普通执行与审查共用相同净化步骤；审查额外记录具体拒绝环节。
             const stages: Array<[string, (value: any) => any]> = [
-                ['装备修改缺少正文依据', value => 净化角色装备命令(value, charBuffer?.装备 || {}, responseFactText)],
+                ['装备修改缺少正文依据', value => isApprovedEquipmentReviewCommand(value, equipmentReviewMoves) ? value : 净化角色装备命令(value, charBuffer?.装备 || {}, responseFactText)],
                 ['天赋/背景修改缺少正文依据', value => 净化角色天赋背景命令(value, charBuffer)],
                 ['生理字段缺少正文依据', value => 净化社交生理命令(value, responseFactText)],
-                ['物品命令未通过安全净化', value => sanitizeInventoryCommand(value, charBuffer, responseFactText)],
+                ['物品命令未通过安全净化', value => {
+                    const match = normalizeStateCommandKey(value.key).match(/^gameState\.角色\.物品列表\[(\d+)\]$/u);
+                    if (reviewPreview && value.action === 'delete' && match && isDisposableReviewCleanup({
+                        ...currentState, 角色: charBuffer, 社交: socialBuffer, 世界: worldBuffer,
+                        任务列表: tasksBuffer, 约定列表: agreementsBuffer
+                    }, Number(match[1]))) return value;
+                    return sanitizeInventoryCommand(value, charBuffer, responseFactText);
+                }],
                 ['NPC 姓名修改被保护', value => 净化社交姓名命令(value, socialBuffer)],
                 ['越界社交索引', value => 净化越界社交索引命令(value, socialBuffer)],
                 ['NPC 姓名非法/占位/污染，或缺少正文新增依据', value => 净化新增社交命令(value, socialBuffer, responseFactText, dialogueSenderKeys, charBuffer?.姓名)]
@@ -1783,14 +1793,24 @@ export const 执行响应命令处理 = (
         });
 
         if (reviewPreview) {
+            const pureEquipmentRoot = (root: string) => {
+                const commands = executedCommands.filter(command => normalizeStateCommandKey(command.key).startsWith(`gameState.${root}`));
+                return commands.length > 0 && commands.every(command => isApprovedEquipmentReviewCommand(command, equipmentReviewMoves));
+            };
             // 只执行候选命令及必要的目标域规范化。不得进入下方回合事实补全、结算和推进链路。
-            if (touchedRoots.has('角色')) {
+            if (touchedRoots.has('角色') && pureEquipmentRoot('角色')) {
+                // 已验证的引用归位不运行自动穿戴/物品去重，保留旧档资产与特殊字段。
+                for (const move of equipmentReviewMoves.filter(item => item.root === '角色.装备')) {
+                    charBuffer.物品列表 = charBuffer.物品列表.map((item: any) => (move.itemId ? item.ID === move.itemId || item.id === move.itemId : item.名称 === move.reference) && item.当前装备部位
+                        ? { ...item, 当前装备部位: move.target } : item);
+                }
+            } else if (touchedRoots.has('角色')) {
                 charBuffer = 同步金钱命令写入(charBuffer, 提取金钱命令字段(executedCommands));
                 // 时间纠错不能让角色规范化按新时刻触发BUFF到期或恢复结算。
                 charBuffer = deps.规范化角色物品容器映射(charBuffer, { 当前时间: baseState?.环境 || currentState.环境, ...deps.角色规范化选项 });
                 校准角色数值范围(charBuffer);
             }
-            if (touchedRoots.has('社交')) {
+            if (touchedRoots.has('社交') && !pureEquipmentRoot('社交')) {
                 socialBuffer = deps.规范化社交列表(socialBuffer, { 合并同名: false });
                 const retained = 合并保留既有NPC列表(socialBeforeCommands, socialBuffer, charBuffer?.姓名);
                 socialBuffer = deps.规范化社交列表(retained.列表, { 合并同名: false });

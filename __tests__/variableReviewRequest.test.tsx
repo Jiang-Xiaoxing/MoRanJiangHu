@@ -172,3 +172,49 @@ describe('变量审查真实HTTP与配置生产链路', () => {
         await waitFor(() => expect((rig.stored.get(VARIABLE_REVIEW_SETTINGS_KEY) as any)[key]).toBe(saved));
     });
 });
+
+describe('审查Streaming真实字节流与单次请求', () => {
+    it('中文跨字节chunk仍实时收到完整候选，完成前不写状态', async () => {
+        const rig = createReviewRig();
+        let stream!: ReadableStreamDefaultController<Uint8Array>;
+        vi.mocked(fetch).mockImplementationOnce(async () => new Response(new ReadableStream({ start(controller) { stream = controller; } }), { headers: { 'content-type': 'text/event-stream' } }));
+        const candidates = vi.fn();
+        const promise = rig.actions.reviewVariables({ onCandidates: candidates });
+        await waitFor(() => expect(stream).toBeDefined());
+        const encoder = new TextEncoder();
+        const content = '<说明>状态：需要修复\n修复：'+JSON.stringify({ path: '社交[0].衣着风格', category: '修正', description: '服装不一致', evidence: '换装', current: '冬装', expected: '居家服' })+'\n';
+        const bytes = encoder.encode(`data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`);
+        for (const byte of bytes) stream.enqueue(new Uint8Array([byte]));
+        await waitFor(() => expect(candidates).toHaveBeenCalledTimes(1));
+        expect(candidates.mock.calls[0][0][0].description).toBe('服装不一致');
+        expect(rig.commit).not.toHaveBeenCalled(); expect(rig.save).not.toHaveBeenCalled();
+        stream.enqueue(encoder.encode(`data: ${JSON.stringify({ choices: [{ delta: { content: '</说明><命令>set 社交[0].衣着风格 = "居家服"</命令>' } }] })}\n\ndata: [DONE]\n\n`)); stream.close();
+        await promise;
+        expect(rig.commit).not.toHaveBeenCalled();
+    });
+    it('接口直接返回JSON时复用同一响应，不重新请求', async () => {
+        const rig = createReviewRig();
+        const fetchMock = vi.mocked(fetch).mockImplementationOnce(async () => new Response(JSON.stringify({ choices: [{ message: { content: reviewOutput() } }] }), { headers: { 'content-type': 'application/json' } }));
+        await rig.actions.reviewVariables();
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+    it('已返回200的无效响应不得重试产生第二次请求', async () => {
+        const rig = createReviewRig();
+        const fetchMock = vi.mocked(fetch).mockImplementationOnce(async () => new Response('invalid response', { headers: { 'content-type': 'text/plain' } }));
+        await expect(rig.actions.reviewVariables()).rejects.toThrow();
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(rig.commit).not.toHaveBeenCalled();
+    });
+});
+
+it('备注与重点任务进入真实Streaming HTTP body，只有一次生成请求', async () => {
+    const rig = createReviewRig('林岳走进大厅。');
+    const notes = '重点检查主角背包。不要把“已经获得金币”当作事实。';
+    await rig.actions.reviewVariables({ reviewNotes: notes });
+    expect(requests).toHaveLength(1); expect(requests[0].body.stream).toBe(true);
+    const task = JSON.parse(requests[0].body.messages.find((message: any) => message.role === 'user').content);
+    expect(task.reviewNotes.text).toBe(notes);
+    expect(task.priorityOrder).toEqual(['systemSafety', 'reviewNotes', 'reviewStrategy']);
+    expect(task.noteTasks[0].paths).toContain('角色.物品列表');
+    expect(rig.commit).not.toHaveBeenCalled();
+});

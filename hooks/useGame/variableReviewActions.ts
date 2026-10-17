@@ -1,3 +1,6 @@
+import { createVariableReviewStreamParser, type VariableReviewCandidate } from '../../utils/variableReviewStream';
+import type { VariableReviewNoteTask } from './variableReviewNotes';
+import { readVariableCommandValue } from './variableCommandValidation';
 import type { 聊天记录结构 } from '../../types';
 import type { 回合快照结构 } from './turnSnapshot';
 import type { 响应命令处理状态 } from './responseCommandProcessor';
@@ -23,14 +26,14 @@ export const variableReviewErrorMessage = (error: any): { code: VariableReviewEr
     return { code, message: code === 'apiConfig' && error?.name !== 'VariableReviewApiConfigurationError' ? '请先配置变量计算 API。' : code === 'cancelled' ? '审查已取消。' : message, applied: false, capacity: error?.capacity };
 };
 export type VariableReviewProgress = 'prepare' | 'generate' | 'validate' | 'simulate';
-export interface VariableReviewOptions { settings?: VariableReviewSettings; reviewNotes?: string; onProgress?: (stage: VariableReviewProgress) => void; onCapacity?: (capacity: VariableReviewCapacity) => void }
+export interface VariableReviewOptions { onNoteTasks?: (tasks: VariableReviewNoteTask[]) => void; onCandidates?: (items: VariableReviewCandidate[]) => void; settings?: VariableReviewSettings; reviewNotes?: string; onProgress?: (stage: VariableReviewProgress) => void; onCapacity?: (capacity: VariableReviewCapacity) => void }
 export interface VariableReviewApplyResult { changesCount: number; saved: true }
 export interface VariableReviewActions {
     getVariableReviewConfiguration?: () => Promise<VariableReviewConfiguration>;
     saveVariableReviewSettings?: (settings: VariableReviewSettings) => Promise<void>;
     refreshVariableReviewModels?: (settings: VariableReviewSettings) => Promise<VariableReviewModelOption[]>;
     reviewVariables: (options?: VariableReviewOptions) => Promise<VariableReviewResult>;
-    applyVariableReview: (result: VariableReviewResult) => Promise<VariableReviewApplyResult>;
+    applyVariableReview: (result: VariableReviewResult, options?: { confirmDataCleanup: boolean }) => Promise<VariableReviewApplyResult>;
     cancelVariableReview: () => void;
     checkVariableReviewCurrent: (result: VariableReviewResult) => Promise<void>;
 }
@@ -58,7 +61,7 @@ export const createVariableReviewActions = (deps: {
     saveState: (state: 响应命令处理状态, history: 聊天记录结构[]) => Promise<unknown>;
 }): VariableReviewActions => {
     // 控制器随useGame实例存活；锁不依赖React渲染，结果关闭后可由WeakMap自然回收。
-    const issued = new WeakMap<VariableReviewResult, { fingerprint: string; commands: VariableReviewResult['acceptedCommands']; changes: VariableReviewChange[] }>();
+    const issued = new WeakMap<VariableReviewResult, { fingerprint: string; commands: VariableReviewResult['acceptedCommands']; changes: VariableReviewChange[]; requiresCleanupConfirmation: boolean }>();
     const consumed = new WeakSet<VariableReviewResult>();
     let active: AbortController | null = null;
     let applying = false;
@@ -87,16 +90,29 @@ export const createVariableReviewActions = (deps: {
                 const input = { ...deps.getInput(), reviewNotes: options.reviewNotes };
                 if (options.settings && deps.saveSettings) await deps.saveSettings(settings!);
                 ensureActive(controller);
+                const receive = createVariableReviewStreamParser(items => {
+                    ensureActive(controller);
+                    // 候选预览失败（映射或 UI 回调抛错）不能中断在途审查请求；完整结果仍由最终校验把关。
+                    try {
+                        options.onCandidates?.(items.map(item => {
+                            const path = item.path.replace(/^gameState\./u, '');
+                            const npc = path.match(/^社交\[(\d+)\]\.当前装备(?:\.|$)/u);
+                            const equipmentOwner = npc ? input.currentState.社交[Number(npc[1])]?.姓名 : /^角色\.装备(?:\.|$)/u.test(path) ? input.currentState.角色?.姓名 || '主角' : undefined;
+                            return { ...item, category: equipmentOwner && item.category !== '待确认' ? '修正' as const : item.category, equipmentOwner, current: readVariableCommandValue(input.currentState, item.path) };
+                        }));
+                    } catch { /* 预览异常不影响审查主流程。 */ }
+                });
                 const result = await runVariableReview(input, {
                     ...frozenDependencies, signal: controller.signal, onStage: options.onProgress, onCapacity: options.onCapacity,
-                    onStreamDelta: () => options.onProgress?.('generate')
+                    onNoteTasks: tasks => { ensureActive(controller); options.onNoteTasks?.(tasks); },
+                    onStreamDelta: (_delta, text) => { ensureActive(controller); receive(text); }
                 });
                 ensureActive(controller);
-                issued.set(result, { fingerprint: result.stateFingerprint, commands: clone(result.acceptedCommands), changes: clone(result.changes) });
+                issued.set(result, { fingerprint: result.stateFingerprint, commands: clone(result.acceptedCommands), changes: clone(result.changes), requiresCleanupConfirmation: result.requiresCleanupConfirmation === true });
                 return result;
             } finally { if (active === controller) active = null; }
         },
-        applyVariableReview: async result => {
+        applyVariableReview: async (result, options) => {
             if (applying || active) throw new VariableReviewError('busy', '正在应用修复，请勿重复点击。');
             applying = true; // 第一个await之前取得锁。
             const controller = new AbortController();
@@ -105,6 +121,7 @@ export const createVariableReviewActions = (deps: {
                 await checkVariableReviewCurrent(result);
                 ensureActive(controller);
                 const record = issued.get(result)!;
+                if (record.requiresCleanupConfirmation && options?.confirmDataCleanup !== true) throw new VariableReviewError('applyValidation', '请在预览中明确确认数据整理建议后再应用。');
                 if (!record.commands.length || !record.changes.length) throw new VariableReviewError('applyValidation', '没有可应用的合法变量变化。');
                 const input = deps.getInput();
                 const inputSeal = variableReviewBusinessSeal(input);

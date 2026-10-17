@@ -50,3 +50,5 @@ html[data-theme="day"] .variable-review-settings input:not([type="radio"]), html
 html[data-theme="day"] .variable-review-settings input::placeholder { color: #75644e; }
 html[data-theme="day"] .variable-review-modal .variable-review-select-option { color: #382e24; }
 @media (max-width: 480px) { .variable-review-settings-grid { grid-template-columns: minmax(0, 1fr); } }
+
+.variable-review-stream { max-height: 42vh; overflow-y: auto; overflow-wrap: anywhere; }

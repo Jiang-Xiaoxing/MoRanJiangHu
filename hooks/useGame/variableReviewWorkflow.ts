@@ -1,3 +1,6 @@
+import { isDisposableReviewCleanup, reviewSkillCleanupIssue } from './variableReviewCleanup';
+import { buildVariableReviewNoteTasks, reconcileVariableReviewNotes, type VariableReviewNoteTask, type VariableReviewNoteResult } from './variableReviewNotes';
+import { auditVariableReviewEquipment, reviewEquipmentCommandIssue, approvedEquipmentReviewMoves, isApprovedEquipmentReviewCommand, equipmentReviewSimulationIssue } from './variableReviewEquipment';
 import type { GameResponse, TavernCommand, 聊天记录结构, OpeningConfig, 提示词结构 } from '../../types';
 import { generateVariableCalibrationUpdate } from '../../services/ai/text';
 import { buildNpcTemplateNameContext } from '../../services/npcTemplateNameContext';
@@ -14,7 +17,7 @@ import { buildVariableReviewRules } from '../../prompts/runtime/variableReviewRu
 import { assertReviewAbsoluteSize, calculateVariableReviewCapacity, assertVariableReviewCapacity, validReviewContextTokens, VariableReviewCapacityError, type VariableReviewCapacity, type ReviewModelCapacity } from '../../utils/variableReviewBudget';
 import { 执行响应命令处理, type 响应命令处理状态, type 响应命令处理依赖 } from './responseCommandProcessor';
 import { 校验变量命令角色安全, validateVariableCommandBasics, readVariableCommandValue, variableCommandProtectionCode, type VariableCommandRejectionCode } from './variableCommandValidation';
-import { 执行带完整性校验的请求, 流式结果疑似被上游掐断 } from './streamIntegrity';
+import { 流式结果疑似被上游掐断 } from './streamIntegrity';
 import { 规范化环境信息, 规范化角色物品容器映射, 规范化社交列表 } from './stateTransforms';
 import { 规范化世界状态, 规范化战斗状态, 规范化门派状态, 规范化剧情状态, 规范化剧情规划状态, 规范化女主剧情规划状态, 规范化同人剧情规划状态, 规范化同人女主剧情规划状态, 战斗结束自动清空 } from './storyState';
 import { compareReviewEconomicChange, expectedReviewWealth, reviewNarratorFacts, extractReviewEconomicSnapshot } from './variableReviewEconomy';
@@ -27,6 +30,8 @@ const clone = <T,>(v: T): T => JSON.parse(JSON.stringify(v));
 export interface VariableReviewChange { path: string; before: unknown; after: unknown }
 export interface VariableReviewRejectedCommand { command: TavernCommand; code: VariableCommandRejectionCode | 'alreadySettled' | 'ineffective'; reason: string }
 export interface VariableReviewResult {
+    noteResults?: VariableReviewNoteResult[];
+    requiresCleanupConfirmation?: boolean;
     status: 'noChanges' | 'insufficientEvidence' | 'changesProposed' | 'blocked';
     summary: string;
     issues: Array<{ description: string; code?: string }>;
@@ -61,6 +66,7 @@ export interface VariableReviewDependencies {
     reviewSettings?: VariableReviewSettings;
     reviewModelMetadata?: ReviewModelCapacity;
     onCapacity?: (capacity: VariableReviewCapacity) => void;
+    onNoteTasks?: (tasks: VariableReviewNoteTask[]) => void;
     gameConfig: any;
     openingConfig?: OpeningConfig;
     promptPool?: 提示词结构[];
@@ -106,9 +112,9 @@ export const prepareVariableReview = async (input: VariableReviewInput) => {
     const originalCommands = turn.originalCommands;
     const registryTruncated = 构建变量路径登记表(frozen.currentState, { maxLines: 221 }).length > 220;
     if (registryTruncated) warnings.push('变量路径提示索引仅展示前220项；完整业务变量仍已发送，实际路径合法性按完整当前状态校验。');
-    const reviewContext: VariableReviewTaskContext = { sourceTurnId: turn.sourceTurnId, beforeStateJson,
+    const reviewContext: VariableReviewTaskContext = { sourceTurnId: turn.sourceTurnId, beforeStateJson, equipmentAudit: auditVariableReviewEquipment(frozen.currentState),
         originalCommands, originalPlayerInput: snapshot.originalPlayerInput,
-        reviewNotes: input.reviewNotes, coverageWarnings: warnings };
+        reviewNotes: input.reviewNotes, noteTasks: buildVariableReviewNoteTasks(input.reviewNotes, frozen.currentState), coverageWarnings: warnings };
     return { input: frozen, response: turn.response, sourceTurnId: turn.sourceTurnId, beforeState, stateJson, reviewContext,
         coverage: { roots: reviewRoots, truncated: warnings.some(w => w.includes('仅读取')), warnings,
             excluded: ['图片、base64、缓存、纯UI状态', '剧情、规划、记忆及非MVP变量域'] }, stateFingerprint: await fingerprintSnapshot(snapshot) };
@@ -150,21 +156,10 @@ export const generateVariableReview = async (prepared: Prepared, deps: VariableR
     resetTimer();
     try {
         let end: any;
-        const result = await Promise.race([aborted, 执行带完整性校验的请求({ 功能名: '变量审查', 强制非流式: !deps.onStreamDelta,
-            重试失败处置: '抛出错误', 重试前重置超时: () => resetTimer(),
-            发起流式请求: async options => {
-                try { return await request(true, info => { end = info; options.onStreamEnd?.(info); }); }
-                catch (error) {
-                    if (controller.signal.aborted || !流式结果疑似被上游掐断(end)) throw error;
-                    // 严格解析先于流完整性检查，半截协议不能作为部分合法命令返回。
-                    resetTimer();
-                    options.onStreamEnd?.({ sawDone: true, accumulatedLength: 0 });
-                    return request(false);
-                }
-            }, 发起非流式请求: () => request(false)
-        })]);
+        const result = await Promise.race([aborted, request(!!deps.onStreamDelta, info => { end = info; })]);
+        if (流式结果疑似被上游掐断(end) || end?.finishReason === 'length') throw new Error('变量审查流式响应截断，候选建议全部作废；未自动重发请求，请手动重试。');
         if (controller.signal.aborted) throw new DOMException('已取消变量审查', 'AbortError');
-        return { ...result.结果, model: api!.model, capacity };
+        return { ...result, model: api!.model, capacity };
     } catch (error) {
         if (timedOut) throw new Error('变量审查请求超时，未生成可应用预览。');
         throw error;
@@ -205,6 +200,10 @@ export const validateVariableReviewCommands = async (prepared: Prepared, command
     const deathBatchValid = 检测NPC死亡判定风险命令(commands, params.baseState.社交, params.parsedResponse).length === 0;
     for (const command of commands) {
         let issue = variableReviewCommandTouchesExcludedData(command) ? { code: 'safety' as const, reason: '审查不允许修改图片、缓存或UI数据' } : validateVariableCommandBasics(command, prepared.input.currentState, true);
+        const skillIssue = !issue && reviewSkillCleanupIssue(command, prepared.input.currentState, deps.openingConfig);
+        if (skillIssue) issue = { code: 'safety', reason: skillIssue };
+        const equipmentIssue = !issue && reviewEquipmentCommandIssue(command, prepared.input.currentState, commands, reviewNarratorFacts(prepared.response.logs));
+        if (equipmentIssue) issue = { code: 'safety', reason: equipmentIssue };
         if (!issue) {
             try { 校验变量命令角色安全([command], params); }
             catch (error: any) {
@@ -237,6 +236,25 @@ export const executeVariableReviewCommands = (prepared: Prepared, validation: Aw
         return { acceptedCommands, previewState };
     };
     let execution = execute(validation.acceptedCommands);
+    // 原槽清空与目标写入不可分开采纳；其它保护拒绝一半时整组回退。
+    const equipmentMoves = approvedEquipmentReviewMoves(prepared.input.currentState, validation.acceptedCommands);
+    const incomplete = equipmentMoves.filter(move => !move.commands.every(expected => execution.acceptedCommands.some(command =>
+        normalizeStateCommandKey(command.key) === normalizeStateCommandKey(expected.key) && command.action === expected.action && command.value === expected.value)));
+    if (incomplete.length) {
+        const failed = execution.acceptedCommands.filter(command => isApprovedEquipmentReviewCommand(command, incomplete));
+        rejectedCommands.push(...failed.map(command => ({ command, code: 'safety' as const, reason: '装备归位的整组命令未通过保护，已整体回退' })));
+        execution = execute(execution.acceptedCommands.filter(command => !failed.includes(command)));
+    }
+    const remainingMoves = equipmentMoves.filter(move => !incomplete.includes(move));
+    if (equipmentReviewSimulationIssue(prepared.input.currentState, execution.previewState, remainingMoves)) {
+        const owners = remainingMoves.map(move => move.root.replace(/\.(装备|当前装备)$/u, ''));
+        const failed = execution.acceptedCommands.filter(command => owners.some(owner => {
+            const key = normalizeStateCommandKey(command.key).replace(/^gameState\./u, '');
+            return key === owner || key.startsWith(`${owner}.`) || owner.startsWith(`${key}[`) || owner.startsWith(`${key}.`);
+        }));
+        rejectedCommands.push(...failed.map(command => ({ command, code: 'safety' as const, reason: '装备归位模拟改变了其它装备或背包资产，相关人物命令已整体回退' })));
+        execution = execute(execution.acceptedCommands.filter(command => !failed.includes(command)));
+    }
     // 混合修复中即使NPC等域有diff，被实体货币同步吞回的钱包命令也不能继续显示accepted。
     if (extractReviewEconomicSnapshot(prepared.input.currentState, deps.openingConfig).total === extractReviewEconomicSnapshot(execution.previewState, deps.openingConfig).total) {
         const ineffectiveMoney = execution.acceptedCommands.filter(command => /^gameState\.角色\.金钱(?:\.|$)/.test(normalizeStateCommandKey(command.key)));
@@ -274,6 +292,7 @@ export const diffVariableReviewStates = (before: any, after: any): VariableRevie
 export const runVariableReview = async (input: VariableReviewInput, deps: VariableReviewDependencies): Promise<VariableReviewResult> => {
     deps.onStage?.('prepare');
     const prepared = await prepareVariableReview(input);
+    deps.onNoteTasks?.(clone(prepared.reviewContext.noteTasks || []));
     deps.onStage?.('generate');
     const generated = await generateVariableReview(prepared, deps);
     if (!generated.reviewStatus) throw new Error('变量审查没有返回可识别的完整结果状态。');
@@ -281,11 +300,19 @@ export const runVariableReview = async (input: VariableReviewInput, deps: Variab
     const validation = await validateVariableReviewCommands(prepared, generated.commands, deps);
     deps.onStage?.('simulate');
     const simulation = simulateVariableReview(prepared, validation, deps);
-    const reconciled = reconcileVariableReviewResult({ ...simulation, reports: generated.reports, before: prepared.input.currentState, after: simulation.previewState,
+    const equipmentIssues = auditVariableReviewEquipment(prepared.input.currentState).issues.map(issue => `疑点：${JSON.stringify(issue)}`);
+    const reconciled = reconcileVariableReviewResult({ ...simulation, reports: [...generated.reports, ...equipmentIssues], before: prepared.input.currentState, after: simulation.previewState,
         body: prepared.response.logs.map(log => log.text).join('\n') });
     const status = simulation.changes.length > 0 ? 'changesProposed' : simulation.rejectedCommands.some(cmd => cmd.code !== 'alreadySettled') ? 'blocked'
         : reconciled.issues.length ? 'insufficientEvidence' : 'noChanges';
-    return { status, summary: reconciled.summary,
+    const noteResults = prepared.reviewContext.noteTasks?.length ? reconcileVariableReviewNotes({ tasks: prepared.reviewContext.noteTasks,
+        reports: generated.reports, before: prepared.input.currentState, changes: simulation.changes,
+        proposedCommands: generated.commands, acceptedCommands: simulation.acceptedCommands, rejectedCommands: simulation.rejectedCommands,
+        truncated: prepared.coverage.truncated, issuePaths: reconciled.issues.flatMap(issue => issue.path ? [issue.path] : []) }) : undefined;
+    return { status, noteResults, requiresCleanupConfirmation: simulation.acceptedCommands.some(command => {
+        const match = normalizeStateCommandKey(command.key).match(/^gameState\.角色\.物品列表\[(\d+)\]$/u);
+        return command.action === 'delete' && !!match && isDisposableReviewCleanup(prepared.input.currentState, Number(match[1]));
+    }), summary: reconciled.summary,
         issues: reconciled.issues, reconciled, rawDiagnostics: generated.reports,
         proposedCommands: clone(generated.commands), ...simulation, stateFingerprint: prepared.stateFingerprint,
         sourceTurnId: prepared.sourceTurnId, coverage: prepared.coverage, rawText: generated.rawText, model: generated.model, capacity: generated.capacity };

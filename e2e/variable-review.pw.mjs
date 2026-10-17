@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { createServer } from 'node:http';
 
 // 在本地Vite（默认4173）上运行；使用已安装Chrome，无真实AI/云端写入。
 test.use({ channel: 'chrome', baseURL: process.env.VARIABLE_REVIEW_TEST_URL || 'http://127.0.0.1:4173' });
@@ -12,7 +13,7 @@ async function enterGame(page, theme, fixture = {}) {
         const db = await import('/services/dbService.ts');
         const transforms = await import('/hooks/useGame/stateTransforms.ts');
         const api = await import('/utils/apiConfig.ts');
-        const settings = api.规范化接口设置({ configs: [{ id: 'review-test', name: '本地测试', baseUrl: 'https://review.test/v1', apiKey: 'test-key', model: 'test-model', 供应商: 'openai' }], currentConfigId: 'review-test', activeConfigId: 'review-test', 功能模型占位: { 变量计算独立模型开关: false, 变量计算渠道ID: 'review-test', 变量计算使用模型: 'test-model' } });
+        const settings = api.规范化接口设置({ configs: [{ id: 'review-test', name: '本地测试', baseUrl: fixture.reviewBase || 'https://review.test/v1', apiKey: 'test-key', model: 'test-model', 供应商: 'openai' }], currentConfigId: 'review-test', activeConfigId: 'review-test', 功能模型占位: { 变量计算独立模型开关: false, 变量计算渠道ID: 'review-test', 变量计算使用模型: 'test-model' } });
         await db.保存设置('api_settings', settings);
         await db.保存设置('app_theme', theme);
         await db.保存存档({ 类型: 'manual', 时间戳: Date.now(), 游戏时间: '1:01:01:08:00',
@@ -39,7 +40,8 @@ async function enterGame(page, theme, fixture = {}) {
     if (await direct.isVisible().catch(() => false)) await direct.click();
     else {
         await page.getByRole('button', { name: /设置$/ }).first().click();
-        await page.getByRole('button', { name: '变量', exact: true }).first().click();
+        // 桌面使用完整标题，手机标签简写为“变量”；取第一个以区别后面的变量生成接口。
+        await page.getByRole('button', { name: /^(变量管理|变量)$/ }).first().click();
     }
     await page.getByRole('button', { name: '变量审查', exact: true }).click();
 }
@@ -240,5 +242,117 @@ for (const operation of ['清空全部设置', '清空全部数据']) for (const
             expect(result.review).toMatchObject({ apiMode: 'independent', provider: 'deepseek', baseUrl: 'https://own.test/v1', apiKey: 'kept-review-key', model: 'review-id', maxOutputTokens: 8192, temperature: 0.1, topP: 0.8 });
             expect(result.review.customPrompt).toBeUndefined();
         } else { expect(result.main).toBeNull(); expect(result.review).toBeNull(); }
+    });
+}
+
+for (const equipment of [false, true]) for (const mobile of [false, true]) {
+    test(`${mobile ? '手机' : '桌面'} day：真实HTTP流${equipment ? '装备槽位' : ''}结束前展示候选，完成后以校验结果为准`, async ({ page }) => {
+        const description = equipment ? '沈清辞：饰品 → 服装，短袖类型与原槽位不符' : '实时收到卡尔档案补齐候选';
+        let finish;
+        const sockets = new Set();
+        const server = createServer((request, response) => {
+            const cors = { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'access-control-allow-methods': 'POST, OPTIONS' };
+            if (request.method === 'OPTIONS') { response.writeHead(204, cors); response.end(); return; }
+            request.resume();
+            request.on('end', () => {
+                response.writeHead(200, { ...cors, 'content-type': 'text/event-stream', 'cache-control': 'no-store' });
+                const candidate = JSON.stringify(equipment ? { path: '社交[0].当前装备.饰品', category: '修正', description, evidence: '日常上衣', expected: '无' } : { path: '社交[0]', category: '补齐', description, evidence: completedBody, expected: '卡尔档案' });
+                const content = `<说明>状态：需要修复\n修复：${candidate}\n`;
+                response.write(`data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`);
+                finish = () => {
+                    const commands = equipment ? 'set 社交[0].当前装备.服装 = "浅橘色薄棉短袖"\nset 社交[0].当前装备.饰品 = "无"' : `push 社交 = ${JSON.stringify({ id: 'NPC-CARL', 姓名: '卡尔', 性别: '男', 身份: '旅人' })}`;
+                    const tail = `</说明><命令>${commands}</命令>`;
+                    response.end(`data: ${JSON.stringify({ choices: [{ delta: { content: tail } }] })}\n\ndata: [DONE]\n\n`);
+                };
+            });
+        });
+        server.on('connection', socket => { sockets.add(socket); socket.on('close', () => sockets.delete(socket)); });
+        await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+        try {
+            await page.setViewportSize(mobile ? { width: 390, height: 844 } : { width: 1280, height: 900 });
+            await enterGame(page, 'day', { reviewBase: `http://127.0.0.1:${server.address().port}/v1`, ...(equipment ? { social: [{ id: 'NPC-SHEN', 姓名: '沈清辞', 当前装备: { 服装: '无', 饰品: '浅橘色薄棉短袖' }, 背包: [{ 名称: '浅橘色薄棉短袖', 类型: '防具', 描述: '日常上衣', 数量: 1 }] }] } : {}) });
+            await page.getByRole('button', { name: '开始变量审查' }).click();
+            await expect(page.getByText(description)).toBeVisible();
+            if (equipment) await expect(page.getByText('修正建议 · 装备槽位 · 沈清辞')).toBeVisible();
+            await expect(page.getByText('AI 候选建议（尚未验证，未修改变量）')).toBeVisible();
+            await expect(page.getByRole('button', { name: '应用修复', exact: true })).toHaveCount(0);
+            const stream = page.locator('.variable-review-stream');
+            expect(await stream.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+            const colors = await page.locator('.variable-review-modal').evaluate(el => ({ color: getComputedStyle(el).color, background: getComputedStyle(el).backgroundColor }));
+            expect(colors).toEqual({ color: 'rgb(56, 46, 36)', background: 'rgb(255, 250, 240)' });
+            await page.screenshot({ path: `/tmp/variable-review-stream-${equipment ? 'equipment-' : ''}${mobile ? 'mobile' : 'desktop'}-day.png` });
+            finish();
+            await expect(page.getByText(/本次将应用的修改/)).toBeVisible();
+            await expect(page.getByText('AI 候选建议（尚未验证，未修改变量）')).toHaveCount(0);
+            await expect(page.getByRole('button', { name: '应用修复', exact: true })).toBeEnabled();
+            if (equipment) {
+                await expect(page.getByText('清理：0 项')).toBeVisible();
+                await page.getByRole('button', { name: '应用修复', exact: true }).click();
+                await expect(page.getByText(/变量修复已应用，共修改/)).toBeVisible();
+                const saves = await page.evaluate(async () => {
+                    const db = await import('/services/dbService.ts'); const database = await db.初始化数据库();
+                    return new Promise((resolve, reject) => { const request = database.transaction('saves').objectStore('saves').getAll(); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
+                });
+                const saved = saves.find(save => save.社交?.[0]?.当前装备?.服装 === '浅橘色薄棉短袖');
+                expect(saved.社交[0].当前装备.饰品).toBe('无');
+                expect(saved.社交[0].背包).toHaveLength(1);
+                expect(saved.社交[0].背包[0].数量).toBe(1);
+            }
+        } finally { for (const socket of sockets) socket.destroy(); await new Promise(resolve => server.close(resolve)); }
+    });
+}
+
+for (const mobile of [false, true]) {
+    test(`${mobile ? '手机' : '桌面'} day：备注任务优先传入真实SSE，反馈区分候选/模拟/应用`, async ({ page }) => {
+        const requests = [];
+        const sockets = new Set();
+        let finish;
+        const notes = '重点检查沈清辞的服装和主角背包';
+        const server = createServer((request, response) => {
+            const cors = { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'access-control-allow-methods': 'POST, OPTIONS' };
+            if (request.method === 'OPTIONS') { response.writeHead(204, cors); response.end(); return; }
+            let raw = ''; request.on('data', chunk => { raw += chunk; });
+            request.on('end', () => {
+                const body = JSON.parse(raw); requests.push(body);
+                const task = JSON.parse(body.messages.find(message => message.role === 'user').content);
+                const read = path => path.match(/[^.[\]]+/g).reduce((value, key) => value[key], task.currentSettledState);
+                const reports = task.noteTasks.map((focus, i) => '备注检查：'+JSON.stringify({ taskId: focus.id, checkedPaths: focus.paths,
+                    observations: focus.paths.map(path => { const observed = path.endsWith('.当前装备') ? `${path}.袜饰` : path; return { path: observed, value: read(observed) }; }),
+                    conclusion: i === 0 ? 'proposed' : 'noChange', reason: i === 0 ? '正文明确换上米色居家服，衣着记录仍为冬装。' : '当前背包无条目，无需清理。' }));
+                const candidate = '修复：'+JSON.stringify({ path: '社交[0].衣着风格', category: '修正', description: '备注重点：沈清辞衣着与正文不一致', evidence: '沈清辞换上米色居家服。', expected: '米色居家服' });
+                const content = `<说明>状态：需要修复\n${reports.join('\n')}\n${candidate}\n`;
+                response.writeHead(200, { ...cors, 'content-type': 'text/event-stream', 'cache-control': 'no-store' });
+                response.write(`data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`);
+                finish = () => response.end(`data: ${JSON.stringify({ choices: [{ delta: { content: '</说明><命令>set 社交[0].衣着风格 = "米色居家服"</命令>' } }] })}\n\ndata: [DONE]\n\n`);
+            });
+        });
+        server.on('connection', socket => { sockets.add(socket); socket.on('close', () => sockets.delete(socket)); });
+        await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+        try {
+            await page.setViewportSize(mobile ? { width: 390, height: 844 } : { width: 1280, height: 900 });
+            await enterGame(page, 'day', { body: '沈清辞换上米色居家服。', reviewBase: `http://127.0.0.1:${server.address().port}/v1`, social: [{ id: 'NPC-SHEN', 姓名: '沈清辞', 衣着风格: '冬装', 当前装备: { 服装: '无', 袜饰: '无' }, 背包: [] }] });
+            await page.getByLabel('本次审查备注（可选）').fill(notes);
+            await page.getByRole('button', { name: '开始变量审查' }).click();
+            const focus = page.getByRole('region', { name: '本次审查重点' });
+            await expect(focus).toBeVisible(); await expect(focus.getByRole('listitem')).toHaveCount(2);
+            await expect(page.getByText('备注重点：沈清辞衣着与正文不一致')).toBeVisible();
+            expect(requests).toHaveLength(1); expect(requests[0].stream).toBe(true);
+            const sent = JSON.parse(requests[0].messages.find(message => message.role === 'user').content);
+            expect(sent.reviewNotes.text).toBe(notes); expect(sent.priorityOrder).toEqual(['systemSafety', 'reviewNotes', 'reviewStrategy']);
+            await expect(page.getByRole('region', { name: '本次备注检查结果' })).toHaveCount(0);
+            await expect(page.getByRole('button', { name: '应用修复', exact: true })).toHaveCount(0);
+            await page.screenshot({ path: `/tmp/variable-review-notes-stream-${mobile ? 'mobile' : 'desktop'}-day.png` });
+            finish();
+            const feedback = page.getByRole('region', { name: '本次备注检查结果' });
+            await expect(feedback.getByText('已检查，发现修改')).toBeVisible();
+            await expect(feedback.getByText('已检查，无需修改')).toBeVisible();
+            await expect(feedback.getByText(/模拟发现的相关变更：1 项（尚未应用）/)).toBeVisible();
+            expect(await page.locator('.variable-review-body').evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+            await feedback.scrollIntoViewIfNeeded();
+            await page.screenshot({ path: `/tmp/variable-review-notes-result-${mobile ? 'mobile' : 'desktop'}-day.png` });
+            await page.getByRole('button', { name: '应用修复', exact: true }).click();
+            await expect(feedback.getByText('本次已应用的相关变更：1 项')).toBeVisible();
+            expect(requests).toHaveLength(1);
+        } finally { for (const socket of sockets) socket.destroy(); await new Promise(resolve => server.close(resolve)); }
     });
 }

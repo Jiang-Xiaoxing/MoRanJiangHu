@@ -1533,7 +1533,8 @@ const 解析SSE文本XHR = (
     signal: AbortSignal | undefined,
     extractDelta: 增量提取器,
     onDelta?: (delta: string, accumulated: string) => void,
-    onStreamEnd?: (info: 通用流式结束信息) => void
+    onStreamEnd?: (info: 通用流式结束信息) => void,
+    acceptCompleteJson = false
 ): Promise<string> => new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     const processor = 创建SSE文本处理器(extractDelta, onDelta, onStreamEnd);
@@ -1669,6 +1670,17 @@ const 解析SSE文本XHR = (
                 return;
             }
             if (!contentType.includes('text/event-stream')) {
+                if (acceptCompleteJson) {
+                    const json = 解析可能是JSON字符串(xhr.responseText || '');
+                    const content = json ? 提取OpenAI完整文本(json) : '';
+                    if (typeof content === 'string' && content.trim()) {
+                        onDelta?.(content, content);
+                        onStreamEnd?.({ sawDone: true, finishReason: 'stop', accumulatedLength: content.length });
+                        settleResolve(content);
+                        return;
+                    }
+                }
+
                 settleReject(new 协议请求错误(`API Error: stream unsupported (content-type=${contentType || 'unknown'})`));
                 return;
             }
@@ -2069,7 +2081,7 @@ const 请求OpenAI家族文本 = async (
                         message: 读取错误消息(error)
                     });
                 } else {
-                    if (!downgradedFromStream && 错误疑似不支持流式(error)) {
+                    if (!requestOptions?.variableReviewSampling && !downgradedFromStream && 错误疑似不支持流式(error)) {
                         useStream = false;
                         downgradedFromStream = true;
                         continue;
@@ -2097,7 +2109,8 @@ const 请求OpenAI家族文本 = async (
                 signal,
                 创建OpenAI流增量提取器({ includeReasoning: requestOptions?.includeReasoning }),
                 streamOptions?.onDelta,
-                effectiveStreamOptions?.onStreamEnd
+                effectiveStreamOptions?.onStreamEnd,
+                requestOptions?.variableReviewSampling === true
             );
             try {
                 return 收尾流式结果(await 执行XHR流式(endpoint));
@@ -2118,7 +2131,7 @@ const 请求OpenAI家族文本 = async (
                 //   ③ 非流式路径（fetchWithCorsRelay）早已是同样的取舍，此处至少多了
                 //      "零输出才重发"这一层额外保护。
                 // 不重试则网页版对无 CORS 的接口彻底不可用，代价更大。
-                if (可以安全改走中转(error) && 中转可用()) {
+                if (!requestOptions?.variableReviewSampling && 可以安全改走中转(error) && 中转可用()) {
                     const 中转地址 = 构建AI中转地址(endpoint);
                     写入流式诊断日志('direct xhr stream blocked (suspected CORS), retrying via same-origin relay', { endpoint });
                     try {
@@ -2134,7 +2147,7 @@ const 请求OpenAI家族文本 = async (
                         throw relayError;
                     }
                 }
-                if (!downgradedFromStream && 错误疑似不支持流式(error)) {
+                if (!requestOptions?.variableReviewSampling && !downgradedFromStream && 错误疑似不支持流式(error)) {
                     useStream = false;
                     downgradedFromStream = true;
                     continue;
@@ -2148,12 +2161,15 @@ const 请求OpenAI家族文本 = async (
             }
         }
 
-        const { response, viaRelay } = await fetchWithCorsRelay(endpoint, {
+        const fetchOptions = {
             method: 'POST',
             headers: requestHeaders,
             body: requestBody,
             signal
-        }, () => {
+        };
+        const { response, viaRelay } = requestOptions?.variableReviewSampling
+            ? { response: await fetch(endpoint, fetchOptions), viaRelay: false }
+            : await fetchWithCorsRelay(endpoint, fetchOptions, () => {
             写入流式诊断日志('direct fetch blocked (suspected CORS), retrying via same-origin relay', { endpoint });
         });
 
@@ -2193,6 +2209,16 @@ const 请求OpenAI家族文本 = async (
 
         const contentType = (response.headers.get('content-type') || '').toLowerCase();
         if (!contentType.includes('text/event-stream')) {
+            if (requestOptions?.variableReviewSampling) {
+                // 兼容忽略stream参数直接返回完整JSON的接口，复用同一响应而非重新付费请求。
+                const raw = await response.text();
+                const json = 解析可能是JSON字符串(raw);
+                const content = json ? 提取OpenAI完整文本(json) : '';
+                if (typeof content !== 'string' || !content.trim()) throw new 协议请求错误('变量审查接口未返回有效流或完整JSON；未自动重发。');
+                非流式回填流式回调(content, streamOptions);
+                return 校验非空结果(content);
+            }
+
             if (!downgradedFromStream) {
                 useStream = false;
                 downgradedFromStream = true;
@@ -2210,7 +2236,7 @@ const 请求OpenAI家族文本 = async (
             });
             return 收尾流式结果(await 解析SSE文本(response, 创建OpenAI流增量提取器({ includeReasoning: requestOptions?.includeReasoning }), streamOptions?.onDelta, 'Stream body is empty', effectiveStreamOptions?.onStreamEnd));
         } catch (error) {
-            if (!downgradedFromStream && 错误疑似不支持流式(error)) {
+            if (!requestOptions?.variableReviewSampling && !downgradedFromStream && 错误疑似不支持流式(error)) {
                 useStream = false;
                 downgradedFromStream = true;
                 continue;
@@ -2254,7 +2280,7 @@ export const 请求模型文本 = async (
             );
         }, {
             signal: options.signal,
-            retries: 1,
+            retries: options.variableReviewSampling ? 0 : 1,
             baseDelayMs: 1200
         });
     }
@@ -2312,7 +2338,7 @@ export const 请求模型文本 = async (
             return attemptResult;
         }, {
             signal: options.signal,
-            retries: 2,
+            retries: options.variableReviewSampling ? 0 : 2,
             baseDelayMs: 800
         });
     } catch (error) {

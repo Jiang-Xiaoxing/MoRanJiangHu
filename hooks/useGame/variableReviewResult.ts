@@ -1,3 +1,4 @@
+import { isDisposableReviewCleanup } from './variableReviewCleanup';
 import type { TavernCommand } from '../../types';
 import type { VariableReviewChange, VariableReviewRejectedCommand } from './variableReviewWorkflow';
 import { normalizeStateCommandKey } from '../../utils/stateHelpers';
@@ -66,6 +67,7 @@ export const reconcileVariableReviewResult = (params: {
         return params.body.split(/[。！？\n]/u).map(text => text.trim()).find(text => cleanupEvidence.test(text) && (name ? textMentionsNpcName(text, name) : text.includes(path.split('.').pop()!.replace(/\[.*$/, ''))));
     };
     const category = (change: VariableReviewChange): ReviewChangeCategory => {
+        if (/^(?:角色\.装备|社交\[\d+\]\.当前装备)(?:\.|$)/u.test(change.path) || /角色\.物品列表\[\d+\]\.当前装备部位$/u.test(change.path)) return 'correction';
         if (!empty(change.before) && (change.after === undefined || change.after === null || change.after === '')) return 'cleanup';
         if (/(?:BUFF|DEBUFF|临时|任务|约定|事件)/u.test(change.path) && /^(?:已完成|已失败|已取消|已作废|已履行|已违约|已结束|过期|失效)$/u.test(String(change.after))) return 'cleanup';
         if (/物品列表.*(?:堆叠数量|数量)$/u.test(change.path) && typeof change.before === 'number' && typeof change.after === 'number' && change.after < change.before) return 'cleanup';
@@ -84,9 +86,10 @@ export const reconcileVariableReviewResult = (params: {
         if (!sources.length) continue;
         const removed = removedItems(a, b);
         const names = removed.map(item => item?.名称 || item?.姓名 || item?.名字).filter(Boolean);
-        const reason = removed.map(item => evidenceFor(parent, item)).filter(Boolean).join('；');
+        const dataCleanup = parent === '角色.物品列表' && removed.length > 0 && removed.every(item => isDisposableReviewCleanup(before, a.indexOf(item)));
+        const reason = dataCleanup ? '数据整理建议：无使用价值且未发现关键关联的一次性杂物；不代表正文发生丢弃，确认后才应用。' : removed.map(item => evidenceFor(parent, item)).filter(Boolean).join('；');
         display.push({ path: parent, before: a, after: b, category: 'cleanup', label: label(parent), sourcePaths: sources.map(change => change.path),
-            count: a.length - b.length, reason: `${names.length ? `移除：${[...new Set(names)].join('、')}。` : ''}${reason ? `正文依据：${reason}` : '模拟执行确认条目数量减少；其它条目变化见下方实际值。'}` });
+            count: a.length - b.length, reason: `${names.length ? `移除：${[...new Set(names)].join('、')}。` : ''}${reason ? `依据：${reason}` : '模拟执行确认条目数量减少；其它条目变化见下方实际值。'}` });
         sources.forEach(change => consumed.add(change.path));
     }
     for (const change of params.changes) {
@@ -138,6 +141,7 @@ export const reconcileVariableReviewResult = (params: {
     };
     for (const report of params.reports) {
         const line = report.replace(/^\s*[-*]\s*/u, '').trim();
+        if (/^备注检查[：:]/u.test(line)) continue;
         if (!line || /^状态[：:]/u.test(line)) continue;
         const structured = line.match(/^(修复|疑点)[：:]\s*(\{[\s\S]*\})$/u);
         let finding: any;

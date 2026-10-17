@@ -1,3 +1,5 @@
+import type { VariableReviewCandidate } from '../../../utils/variableReviewStream';
+import { variableReviewNoteStatusLabels, type VariableReviewNoteTask } from '../../../hooks/useGame/variableReviewNotes';
 import React from 'react';
 import { createPortal } from 'react-dom';
 import type { VariableReviewResult } from '../../../hooks/useGame/variableReviewWorkflow';
@@ -18,7 +20,14 @@ const Value: React.FC<{ value: unknown }> = ({ value }) => {
 const commandText = (cmd: VariableReviewResult['acceptedCommands'][number]) => `${cmd.action} ${cmd.key}${cmd.action === 'delete' ? '' : ` = ${JSON.stringify(cmd.value)}`}`;
 
 const VariableReviewModal: React.FC<VariableReviewModalProps> = ({ actions, revision, onClose }) => {
+    const [candidates, setCandidates] = React.useState<VariableReviewCandidate[]>([]);
+    const streamPanel = React.useRef<HTMLDivElement>(null);
+    const followStream = React.useRef(true);
+    React.useEffect(() => { if (followStream.current && streamPanel.current) streamPanel.current.scrollTop = streamPanel.current.scrollHeight; }, [candidates]);
     const [notes, setNotes] = React.useState('');
+    const [requestNotes, setRequestNotes] = React.useState('');
+    const [noteTasks, setNoteTasks] = React.useState<VariableReviewNoteTask[]>([]);
+    const [cleanupConfirmed, setCleanupConfirmed] = React.useState(false);
     const [configuration, setConfiguration] = React.useState<VariableReviewConfiguration | null>(null);
     const [configurationLoading, setConfigurationLoading] = React.useState(!!actions.getVariableReviewConfiguration);
     const [configurationRetry, setConfigurationRetry] = React.useState(0);
@@ -108,10 +117,13 @@ const VariableReviewModal: React.FC<VariableReviewModalProps> = ({ actions, revi
         if (busy.current || configurationLoading || (actions.getVariableReviewConfiguration && !configuration)) return;
         busy.current = true;
         const request = ++sequence.current;
+        const notesSnapshot = notes;
+        setRequestNotes(notesSnapshot); setNoteTasks([]);
+        setCandidates([]); setCleanupConfirmed(false); followStream.current = true;
         setError(null); setSuccess(''); setResult(null); setCapacity(undefined); setExpired(false); setPhase('reviewing'); setStage('prepare');
         try {
             const settings = configuration ? normalizeVariableReviewSettings(configuration.settings) : undefined;
-            const next = await actions.reviewVariables({ settings, reviewNotes: notes, onCapacity: nextCapacity => { if (alive.current && sequence.current === request) setCapacity(nextCapacity); }, onProgress: nextStage => { if (alive.current && sequence.current === request) setStage(nextStage); } });
+            const next = await actions.reviewVariables({ settings, reviewNotes: notesSnapshot, onNoteTasks: tasks => { if (alive.current && sequence.current === request) setNoteTasks(tasks); }, onCandidates: items => { if (alive.current && sequence.current === request) setCandidates(previous => [...previous, ...items]); }, onCapacity: nextCapacity => { if (alive.current && sequence.current === request) setCapacity(nextCapacity); }, onProgress: nextStage => { if (alive.current && sequence.current === request) setStage(nextStage); } });
             if (alive.current && sequence.current === request) { setResult(next); setPhase('result'); }
         } catch (cause) {
             if (alive.current && sequence.current === request) { const detail = variableReviewErrorMessage(cause); setError(detail); if (detail.capacity) setCapacity(detail.capacity); setPhase('input'); }
@@ -123,7 +135,7 @@ const VariableReviewModal: React.FC<VariableReviewModalProps> = ({ actions, revi
         const request = ++sequence.current;
         setPhase('applying'); setError(null);
         try {
-            const applied = await actions.applyVariableReview(result);
+            const applied = await actions.applyVariableReview(result, { confirmDataCleanup: cleanupConfirmed });
             if (alive.current && sequence.current === request) { setSuccess(`变量修复已应用，共修改 ${applied.changesCount} 项。`); setPhase('applied'); }
         } catch (cause) {
             if (alive.current && sequence.current === request) {
@@ -133,7 +145,7 @@ const VariableReviewModal: React.FC<VariableReviewModalProps> = ({ actions, revi
         } finally { if (sequence.current === request) busy.current = false; }
     };
     const reset = () => { setResult(null); setCapacity(undefined); setError(null); setExpired(false); setSuccess(''); setPhase('input'); };
-    const canApply = phase === 'result' && !expired && !!result?.changes.length && !!result?.acceptedCommands.length;
+    const canApply = (!result?.requiresCleanupConfirmation || cleanupConfirmed) && phase === 'result' && !expired && !!result?.changes.length && !!result?.acceptedCommands.length;
     const presentation = result?.reconciled;
     return createPortal(
         <div className="variable-review-backdrop" ref={backdrop} onClick={event => { if (event.target === event.currentTarget) close(); }}>
@@ -156,10 +168,27 @@ const VariableReviewModal: React.FC<VariableReviewModalProps> = ({ actions, revi
                         {configuration && <VariableReviewSettingsPanel configuration={configuration} actions={actions} onChange={updateConfiguration} />}
                         <label className="variable-review-label" htmlFor="variable-review-notes">本次审查备注（可选）</label>
                         <textarea id="variable-review-notes" rows={4} value={notes} onChange={event => setNotes(event.target.value)} placeholder="例如：重点检查当前人物的服装和装备，或检查正文中新出现但未记录的 NPC。" />
-                        <p className="variable-review-muted">备注仅用于指定本次审查重点，不会被直接视为已经发生的剧情事实。</p>
+                        <p className="variable-review-muted">先检查本次备注，再进行全面审查。备注指定任务，不会被当作已经发生的剧情事实，也不能绕过安全校验。</p>
                     </>}
                     {(phase === 'reviewing' || phase === 'applying') && <div className="variable-review-loading" role="status" aria-live="polite"><span className="animate-pulse">{phase === 'applying' ? '应用中：重新校验、写入并保存…' : `审查中：${stages[stage]}…`}</span><p>确认应用前不会修改真实变量。</p></div>}
+                    {phase === 'reviewing' && requestNotes.trim() && <section aria-label="本次审查重点" className="variable-review-change"><h3>本次审查重点</h3><p className="variable-review-muted">以下是玩家输入的任务清单，不代表 AI 已经完成检查。</p>
+                        {noteTasks.length ? <ol>{noteTasks.map(task => <li className="variable-review-wrap" key={task.id}>{task.text}</li>)}</ol> : <p className="variable-review-wrap">{requestNotes}</p>}
+                    </section>}
+                    {phase === 'reviewing' && <section aria-label="AI 候选建议"><h3>AI 候选建议（尚未验证，未修改变量）</h3><p>已收到 {candidates.length} 条候选建议。最终可能被调整或拒绝，以完成后的校验结果为准。</p>
+                        <div ref={streamPanel} className="variable-review-stream" onScroll={event => { const el = event.currentTarget; followStream.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40; }}>
+                            {candidates.length === 0 && <p>正在等待完整审查建议…</p>}
+                            {candidates.map((item, i) => <article className="variable-review-change" key={i}><strong>{item.equipmentOwner ? `${item.category}建议 · 装备槽位 · ${item.equipmentOwner}` : `${item.category}建议 · ${item.path}`}</strong>{item.equipmentOwner && <p>{item.path}</p>}<p>{item.description}</p><div>当前：<Value value={item.current} /></div><div>建议：<Value value={item.expected} /></div><p>依据：{item.evidence}</p></article>)}
+                        </div>
+                    </section>}
                     {result && <>
+                        {!!result.noteResults?.length && <section aria-label="本次备注检查结果"><h3>本次备注检查结果</h3><p className="variable-review-muted">检查回执由 AI 提供，程序核对范围、请求快照中的值和真实 Diff；这不代表每项语义判断都已独立验证。</p>
+                            {result.noteResults.map(task => <article className="variable-review-change" key={task.id}><strong className="variable-review-wrap">{task.text}</strong><p>{variableReviewNoteStatusLabels[task.status]}</p><p className="variable-review-wrap">{task.reason}</p>
+                                {!task.coverageMatched && <p className="variable-review-muted">本项完整检查覆盖尚未核实。</p>}
+                                <p>AI 提出 {task.proposedCount} 条命令 · 程序接受 {task.acceptedCount} 条 · 拒绝 {task.rejectedCount} 条</p>
+                                <p>{phase === 'applied' ? '本次已应用的相关变更' : '模拟发现的相关变更'}：{task.changePaths.length} 项{phase !== 'applied' && '（尚未应用）'}</p>
+                                {!!task.paths.length && <details><summary>查看核对范围与关联变更</summary><p className="variable-review-wrap">检查范围：{task.paths.join('、')}</p>{!!task.changePaths.length && <p className="variable-review-wrap">关联变更：{task.changePaths.join('、')}</p>}</details>}
+                            </article>)}
+                        </section>}
                         <div className={result.coverage.truncated ? 'variable-review-warning' : 'variable-review-muted'}>{result.coverage.truncated ? '本次审查未覆盖全部变量数据，结果可能不完整。' : '本次审查范围：最近完成回合正文 + 当前主要变量状态'}
                             {!!result.coverage.warnings.length && <details><summary>查看范围说明</summary><ul>{result.coverage.warnings.map((warning, i) => <li key={i}>{warning}</li>)}</ul></details>}
                         </div>
@@ -178,6 +207,7 @@ const VariableReviewModal: React.FC<VariableReviewModalProps> = ({ actions, revi
                                 </article>)}
                             </section>) : result.changes.map((change, i) => <article className="variable-review-change" key={i}><strong>{change.path}</strong><Value value={change.before} /><div>→</div><Value value={change.after} /></article>)}
                         </section>
+                        {result.requiresCleanupConfirmation && phase === 'result' && <label className="variable-review-warning"><input type="checkbox" checked={cleanupConfirmed} onChange={event => setCleanupConfirmed(event.target.checked)} /> 我已核对数据整理物品及实际变化，确认清理（不代表剧情已经发生丢弃）。</label>}
                         <section aria-label="仍需确认的疑点"><h3>仍需确认的疑点</h3><p className="variable-review-muted">这里只有 AI 无法安全自动处理的问题。这里的内容不会自动修改变量。</p>
                             {result.issues.length ? <ul>{result.issues.map((issue, i) => <li className="variable-review-wrap" key={i}>{issue.description}</li>)}</ul> : <p>未发现需要玩家额外确认的问题。</p>}
                         </section>

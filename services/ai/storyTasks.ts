@@ -940,6 +940,14 @@ export const parseVariableReviewResponse = (rawText: string): VariableCalibratio
     const firstLine = match[1].trim().split(/\r?\n/)[0].replace(/^[-*]\s*/, '').trim();
     const status = statuses[firstLine.replace(/^状态[：:]\s*/, '') as keyof typeof statuses];
     if (!/^状态[：:]/u.test(firstLine) || !status) return fail();
+    for (const line of match[1].split(/\r?\n/)) {
+        const finding = line.trim().match(/^(?:修复|疑点)[：:]\s*(\{.*)$/u);
+        if (!finding) continue;
+        try {
+            const value = JSON.parse(finding[1]);
+            if (typeof value.path !== 'string' || typeof value.description !== 'string' || typeof value.evidence !== 'string') return fail();
+        } catch { return fail(); }
+    }
     const commands: TavernCommand[] = [];
     for (const line of match[2].split(/\r?\n/).map(s => s.trim()).filter(Boolean)) {
         const cmd = line.match(/^(set|add|sub|push|delete)\s+(\S+?)(?:\s*=\s*([\s\S]+))?$/u);

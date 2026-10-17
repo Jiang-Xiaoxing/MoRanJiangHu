@@ -27,7 +27,7 @@ describe('审查策略使用用户数据消息，核心规则/执行保护不变
         expect(JSON.parse(messages[2].content).originalPlayerInput.text).toBe('走进大厅');
     });
     it('默认策略职责包括补齐、修正、有依据精简及最终复核', () => {
-        for (const phrase of ['人物与社交补齐', '人物状态修正', '装备与物品补齐', '有依据删除/精简', '其它变量域', '最终复核', '未被提及的长期物品']) expect(DEFAULT_VARIABLE_REVIEW_PROMPT).toContain(phrase);
+        for (const phrase of ['补齐 → 修正 → 智能精简 → 最终复核', '完全重复记录', '默认技艺', '数据整理', 'NPC纪念赠品', '不能只按价格判断']) expect(DEFAULT_VARIABLE_REVIEW_PROMPT).toContain(phrase);
     });
     it.each(['衣着风格', '外貌描写'])('正文明确、已有NPC缺失的%s可通过原命令链补齐', async field => {
         const value = field === '衣着风格' ? '黑色羽绒服、灰色牛仔裤' : '黑色短发，脸颊有雀斑';
@@ -87,4 +87,20 @@ describe('审查策略使用用户数据消息，核心规则/执行保护不变
         expect(vi.mocked(client.请求模型文本).mock.calls[0][0]).toMatchObject({ temperature: 0, topP: 0.7, maxTokens: 8192 });
         expect(vi.mocked(client.请求模型文本).mock.calls[0][2].temperature).toBe(0);
     });
+});
+
+it('动态零值技艺通过模拟清理后仍可由成长命令重建，schema保持不变', async () => {
+    const rig = createReviewRig('林岳走进大厅。');
+    const skill = { 名称: '驾驶', 等级: '未入门', 熟练度: 0, 描述: '尚未形成稳定技艺。' };
+    (rig.source.currentState.角色 as any).技艺.push(skill);
+    const index = (rig.source.currentState.角色 as any).技艺.length - 1;
+    vi.mocked(client.请求模型文本).mockResolvedValue(reviewOutput([{ action: 'delete', key: `角色.技艺[${index}]` }]));
+    const cleaned = await runVariableReview(rig.source, rig.dependencies);
+    expect(cleaned.acceptedCommands).toHaveLength(1);
+    expect((cleaned.previewState.角色 as any).技艺.some((item: any) => item.名称 === '驾驶')).toBe(false);
+    expect((rig.source.currentState.角色 as any).技艺[index]).toEqual(skill);
+    rig.source.currentState = cleaned.previewState;
+    vi.mocked(client.请求模型文本).mockResolvedValue(reviewOutput([{ action: 'push', key: '角色.技艺', value: { ...skill, 等级: '入门', 熟练度: 10 } }]));
+    const learned = await runVariableReview(rig.source, rig.dependencies);
+    expect((learned.previewState.角色 as any).技艺.find((item: any) => item.名称 === '驾驶')?.熟练度).toBe(10);
 });

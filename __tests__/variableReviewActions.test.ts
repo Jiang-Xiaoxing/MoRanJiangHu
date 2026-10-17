@@ -117,3 +117,20 @@ describe('确认应用的真实审查/解析/保护/执行链路', () => {
         finally { validate.mockRestore(); }
     });
 });
+
+it('数据整理须额外确认，篡改Preview标记不能绕过会话保护', async () => {
+    const rig = createReviewRig('林岳走进大厅。');
+    const item = { ID: 'trash', 名称: '普通塑料袋', 类型: '杂物', 堆叠数量: 1, 价值: 0, 描述: '无使用价值' };
+    rig.source.currentState.角色.物品列表 = [item] as any;
+    rig.source.beforeTurn!.state.角色.物品列表 = [structuredClone(item)] as any;
+    vi.mocked(client.请求模型文本).mockResolvedValue(reviewOutput([{ action: 'delete', key: '角色.物品列表[0]' }]));
+    const result = await rig.actions.reviewVariables();
+    expect(result.acceptedCommands, JSON.stringify(result.rejectedCommands)).toHaveLength(1);
+    expect(result.requiresCleanupConfirmation).toBe(true);
+    expect(result.acceptedCommands).toHaveLength(1);
+    result.requiresCleanupConfirmation = false;
+    await expect(rig.actions.applyVariableReview(result)).rejects.toThrow('明确确认');
+    expect(rig.commit).not.toHaveBeenCalled();
+    await rig.actions.applyVariableReview(result, { confirmDataCleanup: true });
+    expect(rig.commit).toHaveBeenCalledTimes(1);
+});

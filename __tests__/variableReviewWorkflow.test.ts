@@ -183,19 +183,13 @@ describe('手动变量审查生产请求、解析、保护与预览', () => {
         vi.mocked(client.请求模型文本).mockRejectedValue(new Error('API failed'));
         await expect(runVariableReview(input(), deps)).rejects.toThrow('API failed');
     });
-    it('截断流严格解析失败后复用非流式降级；降级失败仍报错', async () => {
+    it('截断流整体失败，不自动重发付费请求', async () => {
         vi.mocked(client.请求模型文本).mockImplementationOnce(async (_api, _messages, options) => {
             options.streamOptions?.onStreamEnd?.({ sawDone: false, accumulatedLength: 10 });
             return '<说明>状态：无需修改';
-        }).mockResolvedValueOnce(output());
-        expect((await runVariableReview(input(), { ...deps, onStreamDelta: vi.fn() })).status).toBe('noChanges');
-        expect(client.请求模型文本).toHaveBeenCalledTimes(2);
-        expect(vi.mocked(client.请求模型文本).mock.calls[1][2].streamOptions).toBeUndefined();
-        vi.mocked(client.请求模型文本).mockImplementationOnce(async (_api, _messages, options) => {
-            options.streamOptions?.onStreamEnd?.({ sawDone: false, accumulatedLength: 10 });
-            return '<说明>状态：无需修改';
-        }).mockRejectedValueOnce(new Error('fallback failed'));
-        await expect(runVariableReview(input(), { ...deps, onStreamDelta: vi.fn() })).rejects.toThrow('fallback failed');
+        });
+        await expect(runVariableReview(input(), { ...deps, onStreamDelta: vi.fn() })).rejects.toThrow('解析失败');
+        expect(client.请求模型文本).toHaveBeenCalledTimes(1);
     });
     it('指纹稳定，但状态、正文、回合版本或原命令改变后旧预览失效', async () => {
         model();
@@ -294,14 +288,13 @@ it('请求超时即使供应商未响应取消也必须返回错误', async () =
         await assertion;
     } finally { vi.useRealTimers(); }
 });
-it('完整标签但流未正常结束也必须降级，不能采纳半截结果', async () => {
+it('完整标签但流未正常结束也拒绝，不采纳部分结果或重发', async () => {
     vi.mocked(client.请求模型文本).mockImplementationOnce(async (_api, _messages, options) => {
         options.streamOptions?.onStreamEnd?.({ sawDone: false, accumulatedLength: 90 });
         return output([pushNpc('卡尔')]);
-    }).mockResolvedValueOnce(output());
-    const result = await runVariableReview(input('卡尔出现在大厅。'), { ...deps, onStreamDelta: vi.fn() });
-    expect(result.status).toBe('noChanges');
-    expect(result.proposedCommands).toEqual([]);
+    });
+    await expect(runVariableReview(input('卡尔出现在大厅。'), { ...deps, onStreamDelta: vi.fn() })).rejects.toThrow('截断');
+    expect(client.请求模型文本).toHaveBeenCalledTimes(1);
 });
 it('已有模板名更新/重复出现不被误杀，身份和显示格式保护继续生效', async () => {
     const source = input('苏婉清与江婉继续交谈。');

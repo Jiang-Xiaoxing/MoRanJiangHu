@@ -115,3 +115,50 @@ describe('VariableManager与真实workflow共用的变量审查弹窗', () => {
         await screen.findByText('保存失败'); expect(screen.getByText(/变量修复已应用，但保存失败/)).toBeTruthy(); expect(screen.queryByRole('button', { name: '应用修复' })).toBeNull();
     });
 });
+
+it('审查中实时展示候选，最终被拒绝后撤下候选且不宣称已修改', async () => {
+    const rig = createReviewRig();
+    let complete!: (text: string) => void;
+    vi.mocked(client.请求模型文本).mockImplementationOnce(async (_api, _messages, options) => {
+        const text = '<说明>状态：需要修复\n修复：'+JSON.stringify({ path: '角色.金钱.金币', category: '修正', description: '候选补发金币', evidence: '模型待验证建议', current: 100, expected: 999999 })+'\n';
+        options.streamOptions?.onDelta?.(text, text);
+        return new Promise<string>(resolve => { complete = resolve; });
+    });
+    render(<VariableReviewModal actions={rig.actions} onClose={vi.fn()} />); start();
+    await screen.findByText('候选补发金币');
+    expect(screen.getByText(/尚未验证，未修改变量/)).toBeTruthy();
+    expect(rig.commit).not.toHaveBeenCalled();
+    complete(reviewOutput([{ ...reviewGold, value: 999999 }]));
+    await screen.findByText(/本次将应用的修改/);
+    expect(screen.queryByText('候选补发金币')).toBeNull();
+    expect(apply().disabled).toBe(true);
+    expect(rig.commit).not.toHaveBeenCalled();
+});
+
+it('备注任务在Streaming时显示为玩家清单，缺少回执时明确未完成，不伪报已检查', async () => {
+    const rig = createReviewRig();
+    let complete!: (text: string) => void;
+    let requestNotes = '';
+    vi.mocked(client.请求模型文本).mockImplementationOnce(async (_api, messages) => {
+        requestNotes = JSON.parse(messages[2].content).reviewNotes.text;
+        return new Promise<string>(resolve => { complete = resolve; });
+    });
+    render(<VariableReviewModal actions={rig.actions} onClose={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText('本次审查备注（可选）'), { target: { value: '检查主角背包' } }); start();
+    await screen.findByRole('region', { name: '本次审查重点' });
+    expect(screen.getByText('以下是玩家输入的任务清单，不代表 AI 已经完成检查。')).toBeTruthy();
+    await waitFor(() => expect(requestNotes).toBe('检查主角背包'));
+    expect(rig.commit).not.toHaveBeenCalled();
+    complete(reviewOutput());
+    await screen.findByRole('region', { name: '本次备注检查结果' });
+    expect(screen.getByText('未完成检查')).toBeTruthy();
+    expect(screen.queryByText('已检查，无需修改')).toBeNull();
+    expect(rig.commit).not.toHaveBeenCalled();
+});
+it('没有备注时不显示重点清单或备注结果区域', async () => {
+    const rig = createReviewRig(); vi.mocked(client.请求模型文本).mockResolvedValue(reviewOutput());
+    render(<VariableReviewModal actions={rig.actions} onClose={vi.fn()} />); start();
+    await screen.findByText(/本次将应用的修改/);
+    expect(screen.queryByRole('region', { name: '本次审查重点' })).toBeNull();
+    expect(screen.queryByRole('region', { name: '本次备注检查结果' })).toBeNull();
+});

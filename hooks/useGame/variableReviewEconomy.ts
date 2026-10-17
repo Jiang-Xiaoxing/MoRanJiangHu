@@ -1,3 +1,4 @@
+import { isDisposableReviewCleanup } from './variableReviewCleanup';
 import type { OpeningConfig } from '../../types';
 import { normalizeNpcNameKey } from '../../utils/npcName';
 import { 获取角色金钱BaseAmount, 计算角色货币底层总值, 获取世界观货币层级配置, 获取货币显示模式, 题材货币字段别名 } from '../../utils/currencyDisplay';
@@ -89,6 +90,8 @@ export const compareReviewEconomicChange = (current: any, simulated: any, before
         const count = now.inventory[key]?.count || 0;
         const nextCount = next.inventory[key]?.count || 0;
         if (count === nextCount) continue;
+        const index = current.角色?.物品列表?.findIndex((item: any) => (item.ID || item.id ? `id:${item.ID || item.id}` : `name:${normalizeNpcNameKey(item.名称)}`) === key);
+        if (nextCount === 0 && index >= 0 && isDisposableReviewCleanup(current, index)) continue;
         if (!prior) return insufficient('库存数量变化缺少可信真实回合前基准；仅报告疑点');
         const item = now.inventory[key] || next.inventory[key];
         const oldItem = prior.inventory[key];
