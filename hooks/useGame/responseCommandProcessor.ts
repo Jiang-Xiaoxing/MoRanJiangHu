@@ -3,7 +3,7 @@ import { hasExplicitReviewTimeEvidence, reviewNarratorTimeFacts } from './variab
 import { 校准角色数值范围 } from './variableCalibration';
 import { validateVariableCommandBasics, 校验变量命令角色安全, variableCommandProtectionCode, type VariableCommandRejectionCode } from './variableCommandValidation';
 import type { NpcTemplateNameContext } from '../../utils/npcTemplateNamePolicy';
-import { normalizeNpcNameKey, isMultilingualNpcName, isNpcNameFormatValid, hasNpcNamePollution, textMentionsNpcName } from '../../utils/npcName';
+import { normalizeNpcNameKey, isMultilingualNpcName, isNpcNameFormatValid, hasNpcNamePollution, textMentionsNpcName, 是代称式NPC称呼 } from '../../utils/npcName';
 import { 是否含姓名叙事污染 } from '../../utils/dialogueSpeakerGuard';
 import {
     GameResponse,
@@ -1414,17 +1414,41 @@ const 提取社交姓名命令索引 = (rawKey: unknown): number | null => {
     return Number.isInteger(index) && index >= 0 ? index : null;
 };
 
-const 净化社交姓名命令 = (cmd: any, currentSocial: any[]): any | null => {
+const 净化社交姓名命令 = (cmd: any, currentSocial: any[], responseFactText = '', variablePlanText = ''): any | null => {
     if (检测NPC姓名改写风险命令([cmd], currentSocial).length > 0) return null;
     const key = normalizeStateCommandKey(typeof cmd?.key === 'string' ? cmd.key : '');
+    // 改名只允许「临时称呼 → 真名」，且代称→真名必须在本回合正文/对白/变量规划里找到新名字。
+    const 允许本次改名 = (previousName: string, nextName: string): boolean => {
+        if (!previousName || !nextName) return true;
+        if (normalizeNpcNameKey(previousName) === normalizeNpcNameKey(nextName)) return true;
+        const 当前是占位 = 是否占位名(previousName);
+        const 当前是代称 = 是代称式NPC称呼(previousName);
+        const 目标是真名 = !是否占位名(nextName) && !是代称式NPC称呼(nextName);
+        if (!(当前是占位 || 当前是代称) || !目标是真名) return false;
+        // 占位名（角色9 / 新NPC1）回填真名是既定通道，不额外要求证据；
+        // 代称（青衣女子 / 王掌柜）长得更像人名，覆盖代价更高，必须有揭名依据。
+        if (当前是占位) return true;
+        return textMentionsNpcName(responseFactText, nextName)
+            || (variablePlanText ? textMentionsNpcName(variablePlanText, nextName) : false);
+    };
+    let 存在非法改名 = false;
     // 完整对象更新/重复 push/数组重排也保留已有显示拼写。
     const preserveName = (npc: any): any => {
         const previous = 查找姓名保护对应NPC(npc, currentSocial);
-        return previous?.姓名 && normalizeNpcNameKey(previous.姓名) === normalizeNpcNameKey(npc?.姓名 || npc?.名称 || npc?.name)
-            ? { ...npc, 姓名: previous.姓名 } : npc;
+        const previousName = 规范化命令姓名(previous?.姓名);
+        const nextName = 规范化命令姓名(npc?.姓名 || npc?.名称 || npc?.name);
+        if (previousName && normalizeNpcNameKey(previousName) === normalizeNpcNameKey(nextName)) {
+            return { ...npc, 姓名: previous.姓名 };
+        }
+        if (!允许本次改名(previousName, nextName)) {
+            存在非法改名 = true;
+            return npc;
+        }
+        return npc;
     };
     if (/^gameState\.社交(?:\[\d+\])?$/.test(key)) {
-        return { ...cmd, value: Array.isArray(cmd?.value) ? cmd.value.map(preserveName) : preserveName(cmd?.value) };
+        const nextValue = Array.isArray(cmd?.value) ? cmd.value.map(preserveName) : preserveName(cmd?.value);
+        return 存在非法改名 ? null : { ...cmd, value: nextValue };
     }
     const index = 提取社交姓名命令索引(cmd?.key);
     if (index == null) return cmd;
@@ -1433,9 +1457,7 @@ const 净化社交姓名命令 = (cmd: any, currentSocial: any[]): any | null =>
     const nextName = 规范化命令姓名(cmd?.value);
     if (!currentName || !nextName) return cmd;
     if (normalizeNpcNameKey(currentName) === normalizeNpcNameKey(nextName)) return { ...cmd, value: currentSocial[index].姓名 };
-    // 占位名（如"角色9"）允许被改成真名：这正是把对话框真名回填进社交档案的通道，不能拦。
-    if (是否占位名(currentName) && !是否占位名(nextName)) return cmd;
-    return null;
+    return 允许本次改名(currentName, nextName) ? cmd : null;
 };
 
 // 第1层防御：拦截越界的 `set 社交[N].子字段`（N >= 当前列表长度）。
@@ -1494,6 +1516,35 @@ const 是否新增社交对象命令 = (cmd: any, currentSocial?: any[]): boolea
     return true;
 };
 
+/** 由姓名派生稳定 NPC ID：同名多次出现得到同一个 ID，避免每次标准化都退化成不稳定的 npc_<下标>。 */
+const 生成NPC稳定ID = (name: string): string => {
+    let hash = 0;
+    for (let index = 0; index < name.length; index += 1) {
+        hash = (Math.imul(hash, 31) + name.charCodeAt(index)) | 0;
+    }
+    return `npc_auto_${(hash >>> 0).toString(36)}`;
+};
+
+/**
+ * 给「已经通过新增依据校验」的新 NPC 补稳定 ID。
+ * 背景：AI 的 push 社交 通常不写 id，标准化时会被填成 npc_<下标>；而姓名规范化对代称式姓名
+ * （青衣女子 / 白衣少女 / 老掌柜 等身份词结尾）要求「有稳定 ID + 有实质档案」才肯保留整条记录，
+ * 于是新档开局大量代称角色会被当成占位空壳整条丢弃。这里补 ID 后，证据链判定仍然是唯一入口：
+ * 真名在本回合正文/对白/变量规划里找不到的新增命令，仍然在上面的校验里被拒绝。
+ */
+const 补稳定NPCID = (cmd: any, name: string): any => {
+    const value = cmd?.value;
+    if (!value || typeof value !== 'object' || Array.isArray(value) || !name) return cmd;
+    const 现有小写ID = 规范化命令姓名(value?.id);
+    const 现有大写ID = 规范化命令姓名(value?.ID);
+    const 已稳定ID = [现有小写ID, 现有大写ID].find((id) => id && !/^npc_\d+$/.test(id)) || '';
+    // 标准化只读 `id`：已有一个稳定 ID 时必须回填到 `id`，否则会被兜底成 npc_<下标>。
+    // 没有任何稳定 ID 时按姓名派生（同名同 ID），并清掉残留的 npc_<下标>，避免它继续当匹配键。
+    const nextValue: any = { ...value, id: 已稳定ID || 生成NPC稳定ID(name) };
+    if (现有大写ID && /^npc_\d+$/.test(现有大写ID)) delete nextValue.ID;
+    return { ...cmd, value: nextValue };
+};
+
 const 净化新增社交命令 = (
     cmd: any,
     currentSocial: any[],
@@ -1531,11 +1582,11 @@ const 净化新增社交命令 = (
             .includes(nextKey)
     ));
     if (existing) return cmd;
-    if (dialogueSenderKeys.has(nextKey) || textMentionsNpcName(responseFactText, nextName)) return cmd;
+    if (dialogueSenderKeys.has(nextKey) || textMentionsNpcName(responseFactText, nextName)) return 补稳定NPCID(cmd, nextName);
     // `<变量规划>` 与变量命令同属本回合 AI 响应：NPC 协议允许"正文用代称叙述、变量层落真实姓名"，
     // 真名落在 `<变量规划>`（开局时它就是前台初始化说明稿）即构成合法新增依据；
     // 变量模型自行发明、规划里也没有的名字仍然会被拦截。
-    if (variablePlanText && textMentionsNpcName(variablePlanText, nextName)) return cmd;
+    if (variablePlanText && textMentionsNpcName(variablePlanText, nextName)) return 补稳定NPCID(cmd, nextName);
     return null;
 };
 
@@ -1723,7 +1774,7 @@ export const 执行响应命令处理 = (
                     }, Number(match[1]))) return value;
                     return sanitizeInventoryCommand(value, charBuffer, responseFactText);
                 }],
-                ['NPC 姓名修改被保护', value => 净化社交姓名命令(value, socialBuffer)],
+                ['NPC 姓名修改被保护', value => 净化社交姓名命令(value, socialBuffer, responseFactText, 变量规划文本)],
                 ['越界社交索引', value => 净化越界社交索引命令(value, socialBuffer)],
                 ['NPC 姓名非法/占位/污染，或缺少正文新增依据', value => 净化新增社交命令(value, socialBuffer, responseFactText, dialogueSenderKeys, charBuffer?.姓名, 变量规划文本)]
             ];
