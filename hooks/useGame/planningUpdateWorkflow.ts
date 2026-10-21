@@ -525,50 +525,59 @@ export const 创建规划更新工作流 = (deps: 规划更新工作流依赖) =
 
         await 后台让出主线程();
         检查规划分析中断(params.signal);
+        // [桥接体载体积] 这些载荷会整体经 Capacitor 原生桥下发到 APK（androidBridge.postMessage），
+        // 美化打印（space=2）会把体积撑大 30%~50%，曾把规划分析推过 Android WebView 桥上限，
+        // 报 "Java bridge method invocation error"（见 services/ai/chatCompletionClient.ts 的桥错误归一化）。
+        // 保持紧凑序列化（space=0）；若调层级/体积，先读 .workbuddy/memory 的「原生桥」条目。
         const currentStoryJson = await probe.timeAsync('序列化剧情规划载荷(worker)', () => 执行游戏后台重计算<string>(
             'stringifyTrimCultivation',
-            { value: planningStoryPayload, gameConfig: normalizedGameConfig, space: 2 },
-            () => 后台分段执行(() => JSON.stringify(planningStoryPayload, null, 2))
+            { value: planningStoryPayload, gameConfig: normalizedGameConfig, space: 0 },
+            () => 后台分段执行(() => JSON.stringify(planningStoryPayload))
         ));
         const currentHeroinePlanJson = await probe.timeAsync('序列化女主规划载荷(worker)', () => 执行游戏后台重计算<string>(
             'stringifyTrimCultivation',
-            { value: planningHeroinePayload, gameConfig: normalizedGameConfig, space: 2 },
-            () => 后台分段执行(() => JSON.stringify(planningHeroinePayload, null, 2))
+            { value: planningHeroinePayload, gameConfig: normalizedGameConfig, space: 0 },
+            () => 后台分段执行(() => JSON.stringify(planningHeroinePayload))
         ));
         const worldJson = await probe.timeAsync('序列化世界载荷(worker)', () => 执行游戏后台重计算<string>(
             'stringifyTrimCultivation',
-            { value: normalizedWorldPayload, gameConfig: normalizedGameConfig, space: 2 },
+            { value: normalizedWorldPayload, gameConfig: normalizedGameConfig, space: 0 },
             () => 后台分段执行(() => JSON.stringify(
-                裁剪修炼体系上下文数据(normalizedWorldPayload, normalizedGameConfig),
-                null,
-                2
+                裁剪修炼体系上下文数据(normalizedWorldPayload, normalizedGameConfig)
             ))
         ));
         const socialJson = await probe.timeAsync('序列化社交载荷(worker)', () => 执行游戏后台重计算<string>(
             'stringifyTrimCultivation',
-            { value: normalizedSocialPayload, gameConfig: normalizedGameConfig, space: 2 },
+            { value: normalizedSocialPayload, gameConfig: normalizedGameConfig, space: 0 },
             () => 后台分段执行(() => JSON.stringify(
-                裁剪修炼体系上下文数据(normalizedSocialPayload, normalizedGameConfig),
-                null,
-                2
+                裁剪修炼体系上下文数据(normalizedSocialPayload, normalizedGameConfig)
             ))
         ));
         const envJson = await probe.timeAsync('序列化环境载荷(worker)', () => 执行游戏后台重计算<string>(
             'stringifyTrimCultivation',
-            { value: normalizedEnvPayload, gameConfig: normalizedGameConfig, space: 2 },
+            { value: normalizedEnvPayload, gameConfig: normalizedGameConfig, space: 0 },
             () => 后台分段执行(() => JSON.stringify(
-                裁剪修炼体系上下文数据(normalizedEnvPayload, normalizedGameConfig),
-                null,
-                2
+                裁剪修炼体系上下文数据(normalizedEnvPayload, normalizedGameConfig)
             ))
         ));
+        const 审计焦点文本 = auditFocus.length > 0 ? auditFocus.join('\n') : '常规回合固定审计';
         probe.mark('规划分析请求载荷准备完成', {
             storyJsonLength: currentStoryJson.length,
             heroineJsonLength: currentHeroinePlanJson.length,
             worldJsonLength: worldJson.length,
             socialJsonLength: socialJson.length,
             envJsonLength: envJson.length,
-            extraPromptLength: planningExtraPrompt.length
+            extraPromptLength: planningExtraPrompt.length,
+            // 这是「送入模型的上下文文本总字符数」估算，不是序列化后的 requestBody 长度
+            // （原生桥告警用的是 chatCompletionClient 里的 requestBody.length，两者口径不同，
+            // 别拿这个数直接和 原生桥载荷告警字符数 比大小）。它只用来回答
+            // 「是哪一段把上下文撑大了」，所以必须覆盖请求里实际下发的每一段文本。
+            上下文文本字符数: currentStoryJson.length + currentHeroinePlanJson.length + worldJson.length
+                + socialJson.length + envJson.length + recentBodiesText.length
+                + currentPlanText.length + planningExtraPrompt.length
+                + (params.playerInput || '').length
+                + 审计焦点文本.length
+                + (genderRatioConstraintText || '').length
         });
 
         检查规划分析中断(params.signal);
@@ -583,7 +592,7 @@ export const 创建规划更新工作流 = (deps: 规划更新工作流依赖) =
             envJson,
             recentBodiesText,
             currentPlanText,
-            auditFocusText: auditFocus.length > 0 ? auditFocus.join('\n') : '常规回合固定审计',
+            auditFocusText: 审计焦点文本,
             genderRatioConstraintText,
             heroineEnabled,
             ntlEnabled: normalizedGameConfig.剧情风格 === 'NTL后宫',

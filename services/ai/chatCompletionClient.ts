@@ -818,6 +818,31 @@ export const 规范化流式连接错误提示 = (message: string): string => {
 };
 
 /**
+ * 原生桥（androidBridge.postMessage）调用失败：请求尚未发往模型服务。
+ *
+ * 典型形态 `Error invoking postMessage: Java bridge method invocation error`，
+ * 堆栈落在 postToNative → cap.toNative → cap.nativeCallback。这是 Android WebView
+ * 在 JS→Java 注入桥调用失败时抛的，几乎都是单次下发的请求体超过桥上限
+ * （规划分析的全量状态 JSON 载荷实测可越过；上限随 WebView 版本而变）。
+ *
+ * 因请求零字节发出（无计费风险），允许安全降级：非流式路径走请求拦截而非桥。
+ */
+export const 是否原生桥载荷错误 = (error: unknown): boolean => {
+    // ⚠️ 必须同时看 detail：桥错误经 `解析SSE文本原生` 规范化后，
+    // message 已被替换成玩家可读提示，原始 `Error invoking postMessage ...`
+    // 只留在 `协议请求错误.detail` 里。只看 message 会让降级判断恒为 false，
+    // 降级分支变成死代码（CodeRabbit PR #110 抓到的真 bug）。
+    const 片段: string[] = [读取错误消息(error)];
+    if (error instanceof 协议请求错误 && typeof error.detail === 'string') {
+        片段.push(error.detail);
+    }
+    const message = 片段.join(' ').toLowerCase();
+    if (!message) return false;
+    return message.includes('postmessage')
+        && (message.includes('java bridge') || message.includes('bridge method'));
+};
+
+/**
  * 原生（APK）流式请求的底层连接报错 → 玩家可读提示。
  * 原生插件直接走 HttpURLConnection，报错形如 "Failed to connect to /192.168.1.5:11434"，
  * 原样弹给玩家看不出该怎么处理。
@@ -826,6 +851,11 @@ export const 规范化原生连接错误提示 = (message: string): string => {
     const raw = (message || '').trim();
     if (!raw) return raw;
     const lower = raw.toLowerCase();
+    if (是否原生桥载荷错误(raw)) {
+        return '安卓端本地桥接层无法处理本次请求的体积（当前游戏状态或世界书/小说分解注入内容过大），请求尚未发出。'
+            + '请尝试：关闭女主规划、减少世界书或小说分解的注入内容、回到较早存档；'
+            + '若持续失败，请把这条提示反馈给作者。';
+    }
     const 连接层失败 = lower.includes('failed to connect')
         || lower.includes('connection refused')
         || lower.includes('unable to resolve host')
@@ -1377,6 +1407,15 @@ const 支持XHR流式请求 = (): boolean => {
 // [修复] 旧包/异常包里原生插件未实现时，Capacitor 会抛 "plugin is not implemented"，
 // 记录后本会话不再尝试原生流式，后续请求直接走 XHR/fetch 流式
 let 原生流式插件判定不可用 = false;
+
+/**
+ * 原生桥载荷告警阈值（请求体字符数）。
+ * Android WebView 的 JS→Java 桥对单次下发的大体积字符串会抛
+ * "Java bridge method invocation error"，实际上限随 WebView 版本而变；
+ * 规划分析的全量状态载荷（紧凑序列化后）实测可越过该量级。
+ * 超过阈值只告警并记录诊断，不静默裁剪——裁剪会改变模型可见内容，需产品决策。
+ */
+const 原生桥载荷告警字符数 = 400_000;
 
 const 支持原生流式请求 = (): boolean => {
     if (原生流式插件判定不可用) return false;
@@ -2051,8 +2090,21 @@ const 请求OpenAI家族文本 = async (
             写入流式诊断日志('use native stream transport', {
                 endpoint,
                 model: requestModel || apiConfig.model,
-                supplier: apiConfig.供应商
+                supplier: apiConfig.供应商,
+                bodyLength: requestBody.length
             });
+            if (requestBody.length > 原生桥载荷告警字符数) {
+                console.warn('[native.stream.largePayload] 请求体超过原生桥告警阈值', {
+                    bodyLength: requestBody.length,
+                    threshold: 原生桥载荷告警字符数,
+                    model: requestModel || apiConfig.model,
+                    supplier: apiConfig.供应商
+                });
+                写入流式诊断日志('native stream large payload', {
+                    bodyLength: requestBody.length,
+                    threshold: 原生桥载荷告警字符数
+                });
+            }
             try {
                 return 收尾流式结果(await 解析SSE文本原生(
                     endpoint,
@@ -2081,9 +2133,16 @@ const 请求OpenAI家族文本 = async (
                         message: 读取错误消息(error)
                     });
                 } else {
-                    if (!requestOptions?.variableReviewSampling && !downgradedFromStream && 错误疑似不支持流式(error)) {
+                    if (!requestOptions?.variableReviewSampling && !downgradedFromStream
+                        && (错误疑似不支持流式(error) || 是否原生桥载荷错误(error))) {
+                        // 桥接层拒绝大体积请求：请求零字节发出（无重复计费风险），
+                        // 且非流式走请求拦截而非桥，可安全降级重试一次。
                         useStream = false;
                         downgradedFromStream = true;
+                        写入流式诊断日志('native bridge payload rejected, downgrade to non-stream (bypasses bridge)', {
+                            message: 读取错误消息(error),
+                            bodyLength: requestBody.length
+                        });
                         continue;
                     }
                     if (usePrefixMode && 错误疑似不支持Prefix(error)) {
@@ -2147,7 +2206,16 @@ const 请求OpenAI家族文本 = async (
                         throw relayError;
                     }
                 }
-                if (!requestOptions?.variableReviewSampling && !downgradedFromStream && 错误疑似不支持流式(error)) {
+                if (!requestOptions?.variableReviewSampling && !downgradedFromStream
+                    && (错误疑似不支持流式(error) || 是否原生桥载荷错误(error))) {
+                    // 与原生流式路径同理：桥接层拒绝大体积请求时请求并未发出，
+                    // 降级非流式（走请求拦截，不经桥）重试一次。
+                    if (是否原生桥载荷错误(error)) {
+                        写入流式诊断日志('xhr bridge payload rejected, downgrade to non-stream (bypasses bridge)', {
+                            message: 读取错误消息(error),
+                            bodyLength: body.length
+                        });
+                    }
                     useStream = false;
                     downgradedFromStream = true;
                     continue;

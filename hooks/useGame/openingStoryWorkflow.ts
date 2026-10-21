@@ -331,7 +331,7 @@ type 开场剧情生成依赖 = {
     提取新增NPC列表: (beforeList: any[], afterList: any[]) => any[];
 };
 
-const 构建开局角色建档摘要 = (
+export const 构建开局角色建档摘要 = (
     roleData: any,
     options?: { cultivationSystemEnabled?: boolean }
 ): string => {
@@ -377,7 +377,8 @@ const 构建开局角色建档摘要 = (
         `- 当前所属门派ID：${纯文本(roleData?.所属门派ID)}`,
         '- 穿着指导：主角的服装必须与性别、外貌、性格一致。扶她角色不得穿完全遮蔽下体的裤子，应选择裙装或能体现其性别特征的服饰；男娘角色同样应穿符合其性别表达的服装。AI 不得默认给所有角色套男装。',
         '以上建档信息仅作为本回合初始化依据，不代表这些字段已经自动写入前端变量；除非你在 `<变量规划>` 中明确列出需要初始化的内容，否则它们不算已进入本回合初始化结果。',
-        '若建档已给出天赋或出身背景的 名称/描述/效果，生成开局时必须按原文完整承接，不得省略、压缩成只剩名称，或擅自改写其语义。'
+        '若建档已给出天赋或出身背景的 名称/描述/效果，生成开局时必须按原文完整承接，不得省略、压缩成只剩名称，或擅自改写其语义。',
+        '若以上建档文本（出身背景、天赋、称号）或标记为 `【开局额外约束】`、`【开局额外要求】` 的内容中已写明主角的门派/组织归属，第0回合必须按该描述初始化 `玩家门派`，不得另行随机生成新组织或改写归属。'
     ].join('\n');
 };
 
@@ -2054,19 +2055,21 @@ export const 执行开场剧情生成工作流 = async (
                     const planningTimeouts = 获取游玩请求超时毫秒(openingGameConfig.游玩请求超时设置);
 const 开局规划请求参数 = {
                         playerName: (simulatedOpeningState.角色?.姓名 || deps.角色?.姓名 || '').trim() || '未命名',
+                        // [桥接体载体积] 与回合内规划分析一致：紧凑序列化，避免美化打印把
+                        // 请求体撑过 Android WebView 原生桥上限（space=2 → space=0）。
                         currentStoryJson: JSON.stringify(裁剪修炼体系上下文数据({
                             剧情: simulatedOpeningState.剧情 || {},
                             [fandomEnabled ? '同人剧情规划' : '剧情规划']: activeStoryPlan || {}
-                        }, openingGameConfig), null, 2),
+                        }, openingGameConfig)),
                         currentHeroinePlanJson: JSON.stringify(裁剪修炼体系上下文数据(
                             heroineEnabled
                                 ? { [fandomEnabled ? '同人女主剧情规划' : '女主剧情规划']: activeHeroinePlan || {} }
                                 : {},
                             openingGameConfig
-                        ), null, 2),
-                        worldJson: JSON.stringify(裁剪修炼体系上下文数据(simulatedOpeningState.世界 || {}, openingGameConfig), null, 2),
-                        socialJson: JSON.stringify(裁剪修炼体系上下文数据(simulatedOpeningState.社交 || [], openingGameConfig), null, 2),
-                        envJson: JSON.stringify(裁剪修炼体系上下文数据(simulatedOpeningState.环境 || {}, openingGameConfig), null, 2),
+                        )),
+                        worldJson: JSON.stringify(裁剪修炼体系上下文数据(simulatedOpeningState.世界 || {}, openingGameConfig)),
+                        socialJson: JSON.stringify(裁剪修炼体系上下文数据(simulatedOpeningState.社交 || [], openingGameConfig)),
+                        envJson: JSON.stringify(裁剪修炼体系上下文数据(simulatedOpeningState.环境 || {}, openingGameConfig)),
                         recentBodiesText: planningRecentBodiesText,
                         currentPlanText: openingPlanText,
                         auditFocusText: planningAuditFocusText,

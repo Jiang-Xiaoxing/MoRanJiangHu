@@ -266,6 +266,23 @@ const InputArea: React.FC<Props> = ({
     const mobileTextareaRef = useRef<HTMLTextAreaElement>(null);
     const desktopTextareaRef = useRef<HTMLTextAreaElement>(null);
     const [showQuickRestartMenu, setShowQuickRestartMenu] = useState(false);
+    // 重ROLL 一次性引导：玩家反馈过不知道输入栏旁的回档图标（只看到纯图标 tooltip）。
+    // 首次出现可回档回合时展示；手动关闭或实际用过一次后写 localStorage，不再显示。
+    const [rerollHintDismissed, setRerollHintDismissed] = useState<boolean>(() => {
+        try {
+            return localStorage.getItem('moranjianghu.rerollHintDismissed') === '1';
+        } catch {
+            return false;
+        }
+    });
+    const 关闭重roll提示 = () => {
+        setRerollHintDismissed(true);
+        try {
+            localStorage.setItem('moranjianghu.rerollHintDismissed', '1');
+        } catch {
+            // 隐私模式等写入失败时仅本次会话不再显示
+        }
+    };
     const [errorModal, setErrorModal] = useState<{ open: boolean; title: string; content: string }>({
         open: false,
         title: '',
@@ -595,6 +612,7 @@ const InputArea: React.FC<Props> = ({
         if (!restoredInput) return;
         setContent(restoredInput);
         setLastSentContent(restoredInput);
+        关闭重roll提示();
     };
 
     const handleRetryVariableGeneration = async () => {
@@ -1317,6 +1335,25 @@ const InputArea: React.FC<Props> = ({
                 </div>
             )}
             
+            {!rerollHintDismissed && canReroll && !busy && (
+                <div className="flex items-start gap-2 rounded-lg border border-wuxia-gold/30 bg-wuxia-gold/5 px-3 py-2">
+                    <span className="flex-1 text-[11px] leading-relaxed text-wuxia-gold/90">
+                        对上一回合的回复不满意？点工具栏中的「重ROLL」回旋箭头图标，可回档到上一轮——你输入的行动会自动填回输入框，修改后重新发送即可。
+                    </span>
+                    <button
+                        type="button"
+                        onClick={关闭重roll提示}
+                        className="shrink-0 rounded p-0.5 text-wuxia-gold/60 transition-colors hover:text-wuxia-gold"
+                        title="不再显示"
+                        aria-label="不再显示重roll提示"
+                    >
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="h-3.5 w-3.5">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                    </button>
+                </div>
+            )}
+
             {/* Main Control Bar */}
             <div className="flex items-center gap-1 sm:gap-1.5">
                 
