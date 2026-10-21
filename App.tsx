@@ -4738,6 +4738,7 @@ const App: React.FC = () => {
                                 场外对话={state.场外对话 || []}
                                 配置就绪={角色对话配置就绪}
                                 onSend={(params) => actions.handleRoleChatSend(params)}
+                                onReroll={(params) => actions.handleRoleChatReroll(params)}
                                 onGroupSend={(params) => actions.handleGroupRoleChatSend(params)}
                                 onStop={() => actions.stopRoleChat()}
                                 onDiscard={() => actions.discardRoleChat()}

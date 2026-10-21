@@ -291,3 +291,27 @@ test('角色对话面板：暂存随存档恢复、按 NPC 隔离、未配置时
     await page.getByRole('button', { name: '保存设置' }).first().click({ timeout: 5000, force: true });
     await expect(page.getByText('已开启角色对话独立模型，请先获取列表并选择模型。')).toBeVisible({ timeout: 5000 });
 });
+
+// 玩家反馈：「角色对话里有没有可能增加重roll的功能？有时候哈基米犯蠢回复不满意也改不了」。
+// 这里只验证入口出现与否——重ROLL 的「摘掉哪两条」逻辑由
+// __tests__/roleChatRerollTarget.test.ts 单测覆盖，不需要真调模型。
+test('角色对话面板：上一句是角色回复时出现「重ROLL」，未配置模型时禁用', async ({ page }) => {
+    const roleChatEntry = await loadGame(page);
+    await roleChatEntry.click({ timeout: 5000, force: true });
+    const panel = panelOf(page);
+    await expect(panel).toBeVisible({ timeout: 10000 });
+
+    // 甲线最后一条是 NPC 回复 → 应出现重ROLL 入口。
+    const reroll = panel.getByRole('button', { name: '重ROLL' });
+    await expect(reroll).toBeVisible({ timeout: 5000 });
+    await expect(reroll).toHaveAttribute('title', /重新生成/);
+    // 本用例没有配置独立模型：入口要在，但不能点（不能偷偷回退主剧情模型）。
+    await expect(reroll).toBeDisabled();
+    await expect(panel.getByText(/不满意可点「重ROLL」重生成上一句/)).toBeVisible();
+
+    // 切到乙线：最后一条同样是 NPC 回复，入口仍在。
+    await panel.locator('select').first().selectOption('npc-role-b');
+    await expect(panel.getByRole('button', { name: '重ROLL' })).toBeVisible({ timeout: 5000 });
+
+    await page.screenshot({ path: 'artifacts/e2e-role-chat-reroll.png', fullPage: false });
+});

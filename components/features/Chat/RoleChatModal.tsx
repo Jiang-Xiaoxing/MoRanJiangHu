@@ -17,6 +17,12 @@ interface Props {
         已确认位置?: boolean;
         onDelta?: (delta: string, accumulated: string) => void;
     }) => Promise<{ reply: string; npcName: string }>;
+    /** 重ROLL 上一次角色回复：用玩家上一句原话重新生成，替换掉那一条。 */
+    onReroll: (params: {
+        npcId?: string;
+        npcName?: string;
+        onDelta?: (delta: string, accumulated: string) => void;
+    }) => Promise<{ reply: string; npcName: string }>;
     onGroupSend: React.ComponentProps<typeof GroupRoleChatModal>['onSend'];
     onStop: () => void;
     onDiscard: () => void;
@@ -39,6 +45,7 @@ const RoleChatModal: React.FC<Props> = ({
     场外对话,
     配置就绪,
     onSend,
+    onReroll,
     onGroupSend,
     onStop,
     onDiscard,
@@ -54,6 +61,7 @@ const RoleChatModal: React.FC<Props> = ({
     const [selectedNpcId, setSelectedNpcId] = useState('');
     const [draft, setDraft] = useState('');
     const [sending, setSending] = useState(false);
+    const [rerolling, setRerolling] = useState(false);
     const [streamText, setStreamText] = useState('');
     const [error, setError] = useState('');
     const [confirmedKey, setConfirmedKey] = useState('');
@@ -103,11 +111,20 @@ const RoleChatModal: React.FC<Props> = ({
     const selectedNpc = 在场NPC列表.find((npc) => String(npc?.id || npc?.姓名 || '') === selectedNpcId)
         || 在场NPC列表[0]
         || null;
-    const busy = sending || loading;
+    const busy = sending || rerolling || loading;
     const selectedCheck = selectedNpc ? 判断角色对话位置(selectedNpc, 环境) : null;
     const selectedConfirmKey = selectedNpc ? 角色对话确认键(selectedNpc, 环境) : '';
     const locationConfirmed = Boolean(selectedConfirmKey && confirmedKey === selectedConfirmKey);
     const canSend = 配置就绪 && !busy && Boolean(selectedNpc) && locationConfirmed && draft.trim().length > 0;
+
+    // 只有「最后一条是本角色的 NPC 回复、其前一条是玩家发言」时才能重ROLL——
+    // 与 计算角色对话重Roll目标 的判定保持一致，避免按钮亮着却点了报错。
+    const 可重Roll = useMemo(() => {
+        if (当前对话.length < 2) return false;
+        const 末条 = 当前对话[当前对话.length - 1];
+        const 前条 = 当前对话[当前对话.length - 2];
+        return 末条?.role === 'npc' && 前条?.role === 'player';
+    }, [当前对话]);
 
     const handleSend = async () => {
         const text = draft.trim();
@@ -129,6 +146,25 @@ const RoleChatModal: React.FC<Props> = ({
         } finally {
             setStreamText('');
             setSending(false);
+        }
+    };
+
+    const handleReroll = async () => {
+        if (!selectedNpc || busy || !可重Roll) return;
+        setRerolling(true);
+        setError('');
+        setStreamText('');
+        try {
+            await onReroll({
+                npcId: String(selectedNpc?.id || ''),
+                npcName: String(selectedNpc?.姓名 || ''),
+                onDelta: (_delta, accumulated) => setStreamText(accumulated)
+            });
+        } catch (e: any) {
+            setError(String(e?.message || e || '重ROLL 失败'));
+        } finally {
+            setStreamText('');
+            setRerolling(false);
         }
     };
 
@@ -263,7 +299,7 @@ const RoleChatModal: React.FC<Props> = ({
                         </div>
                     )}
                     {当前对话.map(renderBubble)}
-                    {sending && (
+                    {(sending || rerolling) && (
                         <div className="flex justify-start">
                             <div className="max-w-[85%] rounded-xl px-3 py-2 text-sm leading-relaxed border bg-black/40 border-gray-700/60 text-paper-white">
                                 <div className="text-[10px] mb-0.5 text-wuxia-cyan/80">{selectedNpc?.姓名 || 'NPC'}</div>
@@ -300,7 +336,18 @@ const RoleChatModal: React.FC<Props> = ({
                             }
                             className="flex-1 min-w-0 bg-black/50 border border-gray-700 rounded-lg p-2.5 text-sm text-paper-white font-serif placeholder-gray-600 outline-none focus:border-wuxia-gold resize-none disabled:opacity-50"
                         />
-                        {sending && <button
+                        {可重Roll && !busy && (
+                            <button
+                                type="button"
+                                onClick={() => { void handleReroll(); }}
+                                disabled={!配置就绪}
+                                title="重ROLL：用你上一句原话重新生成这名角色的回复，原来那一条会被替换"
+                                className="px-3 h-[46px] shrink-0 border border-wuxia-cyan/40 text-wuxia-cyan rounded-lg text-xs hover:bg-wuxia-cyan/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                            >
+                                重ROLL
+                            </button>
+                        )}
+                        {(sending || rerolling) && <button
                             type="button"
                             onClick={onStop}
                             className="px-3 h-[46px] shrink-0 border border-red-500/50 text-red-200 rounded-lg text-xs"
@@ -320,6 +367,7 @@ const RoleChatModal: React.FC<Props> = ({
                         <span>
                             本对话暂存 {当前对话.length} 条{场外对话.length > 当前对话.length ? ` · 全部暂存 ${场外对话.length} 条` : ''}
                             {' '}· 下次提交行动时一并注入，主回合成功后自动清空
+                            {可重Roll && !busy ? ' · 不满意可点「重ROLL」重生成上一句' : ''}
                         </span>
                         {loading && <span className="text-amber-300/80">主回合进行中，对话暂停</span>}
                     </div>
