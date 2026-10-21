@@ -2055,19 +2055,21 @@ export const 执行开场剧情生成工作流 = async (
                     const planningTimeouts = 获取游玩请求超时毫秒(openingGameConfig.游玩请求超时设置);
 const 开局规划请求参数 = {
                         playerName: (simulatedOpeningState.角色?.姓名 || deps.角色?.姓名 || '').trim() || '未命名',
+                        // [桥接体载体积] 与回合内规划分析一致：紧凑序列化，避免美化打印把
+                        // 请求体撑过 Android WebView 原生桥上限（space=2 → space=0）。
                         currentStoryJson: JSON.stringify(裁剪修炼体系上下文数据({
                             剧情: simulatedOpeningState.剧情 || {},
                             [fandomEnabled ? '同人剧情规划' : '剧情规划']: activeStoryPlan || {}
-                        }, openingGameConfig), null, 2),
+                        }, openingGameConfig)),
                         currentHeroinePlanJson: JSON.stringify(裁剪修炼体系上下文数据(
                             heroineEnabled
                                 ? { [fandomEnabled ? '同人女主剧情规划' : '女主剧情规划']: activeHeroinePlan || {} }
                                 : {},
                             openingGameConfig
-                        ), null, 2),
-                        worldJson: JSON.stringify(裁剪修炼体系上下文数据(simulatedOpeningState.世界 || {}, openingGameConfig), null, 2),
-                        socialJson: JSON.stringify(裁剪修炼体系上下文数据(simulatedOpeningState.社交 || [], openingGameConfig), null, 2),
-                        envJson: JSON.stringify(裁剪修炼体系上下文数据(simulatedOpeningState.环境 || {}, openingGameConfig), null, 2),
+                        )),
+                        worldJson: JSON.stringify(裁剪修炼体系上下文数据(simulatedOpeningState.世界 || {}, openingGameConfig)),
+                        socialJson: JSON.stringify(裁剪修炼体系上下文数据(simulatedOpeningState.社交 || [], openingGameConfig)),
+                        envJson: JSON.stringify(裁剪修炼体系上下文数据(simulatedOpeningState.环境 || {}, openingGameConfig)),
                         recentBodiesText: planningRecentBodiesText,
                         currentPlanText: openingPlanText,
                         auditFocusText: planningAuditFocusText,

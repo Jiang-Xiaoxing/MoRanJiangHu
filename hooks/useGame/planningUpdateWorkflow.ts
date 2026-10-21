@@ -525,41 +525,39 @@ export const 创建规划更新工作流 = (deps: 规划更新工作流依赖) =
 
         await 后台让出主线程();
         检查规划分析中断(params.signal);
+        // [桥接体载体积] 这些载荷会整体经 Capacitor 原生桥下发到 APK（androidBridge.postMessage），
+        // 美化打印（space=2）会把体积撑大 30%~50%，曾把规划分析推过 Android WebView 桥上限，
+        // 报 "Java bridge method invocation error"（见 services/ai/chatCompletionClient.ts 的桥错误归一化）。
+        // 保持紧凑序列化（space=0）；若调层级/体积，先读 .workbuddy/memory 的「原生桥」条目。
         const currentStoryJson = await probe.timeAsync('序列化剧情规划载荷(worker)', () => 执行游戏后台重计算<string>(
             'stringifyTrimCultivation',
-            { value: planningStoryPayload, gameConfig: normalizedGameConfig, space: 2 },
-            () => 后台分段执行(() => JSON.stringify(planningStoryPayload, null, 2))
+            { value: planningStoryPayload, gameConfig: normalizedGameConfig, space: 0 },
+            () => 后台分段执行(() => JSON.stringify(planningStoryPayload))
         ));
         const currentHeroinePlanJson = await probe.timeAsync('序列化女主规划载荷(worker)', () => 执行游戏后台重计算<string>(
             'stringifyTrimCultivation',
-            { value: planningHeroinePayload, gameConfig: normalizedGameConfig, space: 2 },
-            () => 后台分段执行(() => JSON.stringify(planningHeroinePayload, null, 2))
+            { value: planningHeroinePayload, gameConfig: normalizedGameConfig, space: 0 },
+            () => 后台分段执行(() => JSON.stringify(planningHeroinePayload))
         ));
         const worldJson = await probe.timeAsync('序列化世界载荷(worker)', () => 执行游戏后台重计算<string>(
             'stringifyTrimCultivation',
-            { value: normalizedWorldPayload, gameConfig: normalizedGameConfig, space: 2 },
+            { value: normalizedWorldPayload, gameConfig: normalizedGameConfig, space: 0 },
             () => 后台分段执行(() => JSON.stringify(
-                裁剪修炼体系上下文数据(normalizedWorldPayload, normalizedGameConfig),
-                null,
-                2
+                裁剪修炼体系上下文数据(normalizedWorldPayload, normalizedGameConfig)
             ))
         ));
         const socialJson = await probe.timeAsync('序列化社交载荷(worker)', () => 执行游戏后台重计算<string>(
             'stringifyTrimCultivation',
-            { value: normalizedSocialPayload, gameConfig: normalizedGameConfig, space: 2 },
+            { value: normalizedSocialPayload, gameConfig: normalizedGameConfig, space: 0 },
             () => 后台分段执行(() => JSON.stringify(
-                裁剪修炼体系上下文数据(normalizedSocialPayload, normalizedGameConfig),
-                null,
-                2
+                裁剪修炼体系上下文数据(normalizedSocialPayload, normalizedGameConfig)
             ))
         ));
         const envJson = await probe.timeAsync('序列化环境载荷(worker)', () => 执行游戏后台重计算<string>(
             'stringifyTrimCultivation',
-            { value: normalizedEnvPayload, gameConfig: normalizedGameConfig, space: 2 },
+            { value: normalizedEnvPayload, gameConfig: normalizedGameConfig, space: 0 },
             () => 后台分段执行(() => JSON.stringify(
-                裁剪修炼体系上下文数据(normalizedEnvPayload, normalizedGameConfig),
-                null,
-                2
+                裁剪修炼体系上下文数据(normalizedEnvPayload, normalizedGameConfig)
             ))
         ));
         probe.mark('规划分析请求载荷准备完成', {
@@ -568,7 +566,10 @@ export const 创建规划更新工作流 = (deps: 规划更新工作流依赖) =
             worldJsonLength: worldJson.length,
             socialJsonLength: socialJson.length,
             envJsonLength: envJson.length,
-            extraPromptLength: planningExtraPrompt.length
+            extraPromptLength: planningExtraPrompt.length,
+            载荷总字符数: currentStoryJson.length + currentHeroinePlanJson.length + worldJson.length
+                + socialJson.length + envJson.length + recentBodiesText.length
+                + currentPlanText.length + planningExtraPrompt.length
         });
 
         检查规划分析中断(params.signal);
