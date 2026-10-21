@@ -568,10 +568,11 @@ export const 创建规划更新工作流 = (deps: 规划更新工作流依赖) =
             socialJsonLength: socialJson.length,
             envJsonLength: envJson.length,
             extraPromptLength: planningExtraPrompt.length,
-            // 必须把请求里实际下发的每一段文本都算进来：桥上限告警（见
-            // services/ai/chatCompletionClient.ts 的 原生桥载荷告警字符数）依赖这个数，
-            // 漏算会让诊断低估真实载荷、把「接近上限」误报成健康。
-            载荷总字符数: currentStoryJson.length + currentHeroinePlanJson.length + worldJson.length
+            // 这是「送入模型的上下文文本总字符数」估算，不是序列化后的 requestBody 长度
+            // （原生桥告警用的是 chatCompletionClient 里的 requestBody.length，两者口径不同，
+            // 别拿这个数直接和 原生桥载荷告警字符数 比大小）。它只用来回答
+            // 「是哪一段把上下文撑大了」，所以必须覆盖请求里实际下发的每一段文本。
+            上下文文本字符数: currentStoryJson.length + currentHeroinePlanJson.length + worldJson.length
                 + socialJson.length + envJson.length + recentBodiesText.length
                 + currentPlanText.length + planningExtraPrompt.length
                 + (params.playerInput || '').length
