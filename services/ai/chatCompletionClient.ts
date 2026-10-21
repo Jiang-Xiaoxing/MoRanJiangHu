@@ -828,7 +828,15 @@ export const 规范化流式连接错误提示 = (message: string): string => {
  * 因请求零字节发出（无计费风险），允许安全降级：非流式路径走请求拦截而非桥。
  */
 export const 是否原生桥载荷错误 = (error: unknown): boolean => {
-    const message = 读取错误消息(error).toLowerCase();
+    // ⚠️ 必须同时看 detail：桥错误经 `解析SSE文本原生` 规范化后，
+    // message 已被替换成玩家可读提示，原始 `Error invoking postMessage ...`
+    // 只留在 `协议请求错误.detail` 里。只看 message 会让降级判断恒为 false，
+    // 降级分支变成死代码（CodeRabbit PR #110 抓到的真 bug）。
+    const 片段: string[] = [读取错误消息(error)];
+    if (error instanceof 协议请求错误 && typeof error.detail === 'string') {
+        片段.push(error.detail);
+    }
+    const message = 片段.join(' ').toLowerCase();
     if (!message) return false;
     return message.includes('postmessage')
         && (message.includes('java bridge') || message.includes('bridge method'));

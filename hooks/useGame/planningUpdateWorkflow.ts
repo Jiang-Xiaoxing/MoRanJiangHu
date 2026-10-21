@@ -560,6 +560,7 @@ export const 创建规划更新工作流 = (deps: 规划更新工作流依赖) =
                 裁剪修炼体系上下文数据(normalizedEnvPayload, normalizedGameConfig)
             ))
         ));
+        const 审计焦点文本 = auditFocus.length > 0 ? auditFocus.join('\n') : '常规回合固定审计';
         probe.mark('规划分析请求载荷准备完成', {
             storyJsonLength: currentStoryJson.length,
             heroineJsonLength: currentHeroinePlanJson.length,
@@ -567,9 +568,15 @@ export const 创建规划更新工作流 = (deps: 规划更新工作流依赖) =
             socialJsonLength: socialJson.length,
             envJsonLength: envJson.length,
             extraPromptLength: planningExtraPrompt.length,
+            // 必须把请求里实际下发的每一段文本都算进来：桥上限告警（见
+            // services/ai/chatCompletionClient.ts 的 原生桥载荷告警字符数）依赖这个数，
+            // 漏算会让诊断低估真实载荷、把「接近上限」误报成健康。
             载荷总字符数: currentStoryJson.length + currentHeroinePlanJson.length + worldJson.length
                 + socialJson.length + envJson.length + recentBodiesText.length
                 + currentPlanText.length + planningExtraPrompt.length
+                + (params.playerInput || '').length
+                + 审计焦点文本.length
+                + (genderRatioConstraintText || '').length
         });
 
         检查规划分析中断(params.signal);
@@ -584,7 +591,7 @@ export const 创建规划更新工作流 = (deps: 规划更新工作流依赖) =
             envJson,
             recentBodiesText,
             currentPlanText,
-            auditFocusText: auditFocus.length > 0 ? auditFocus.join('\n') : '常规回合固定审计',
+            auditFocusText: 审计焦点文本,
             genderRatioConstraintText,
             heroineEnabled,
             ntlEnabled: normalizedGameConfig.剧情风格 === 'NTL后宫',
