@@ -301,16 +301,23 @@ test('角色对话面板：上一句是角色回复时出现「重ROLL」，未�
     const panel = panelOf(page);
     await expect(panel).toBeVisible({ timeout: 10000 });
 
-    // 甲线最后一条是 NPC 回复 → 应出现重ROLL 入口。
+    // 位置还没确认（本存档位置记录不足）时不该出现重ROLL —— 与普通发送共用同一条门槛，
+    // 否则面板重开后 confirmedKey 被清空，重ROLL 会绕过发送必须过的位置确认。
+    await expect(panel.getByRole('button', { name: '重ROLL' })).toHaveCount(0);
+
+    await panel.locator('input[type="checkbox"]').first().check({ force: true });
     const reroll = panel.getByRole('button', { name: '重ROLL' });
     await expect(reroll).toBeVisible({ timeout: 5000 });
     await expect(reroll).toHaveAttribute('title', /重新生成/);
-    // 本用例没有配置独立模型：入口要在，但不能点（不能偷偷回退主剧情模型）。
+    // 本用例没有配置独立模型：入口要在，但不能点（不能偷偷回退主剧情模型），
+    // 也不能提示玩家去点一个点不动的按钮。
     await expect(reroll).toBeDisabled();
-    await expect(panel.getByText(/不满意可点「重ROLL」重生成上一句/)).toBeVisible();
+    await expect(panel.getByText(/不满意可点「重ROLL」重生成上一句/)).toHaveCount(0);
 
-    // 切到乙线：最后一条同样是 NPC 回复，入口仍在。
+    // 切到乙线：换人后位置确认按 NPC 重算，需要重新勾选确认才出现入口。
     await panel.locator('select').first().selectOption('npc-role-b');
+    await expect(panel.getByRole('button', { name: '重ROLL' })).toHaveCount(0);
+    await panel.locator('input[type="checkbox"]').first().check({ force: true });
     await expect(panel.getByRole('button', { name: '重ROLL' })).toBeVisible({ timeout: 5000 });
 
     await page.screenshot({ path: 'artifacts/e2e-role-chat-reroll.png', fullPage: false });

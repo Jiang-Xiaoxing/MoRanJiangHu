@@ -21,6 +21,7 @@ interface Props {
     onReroll: (params: {
         npcId?: string;
         npcName?: string;
+        已确认位置?: boolean;
         onDelta?: (delta: string, accumulated: string) => void;
     }) => Promise<{ reply: string; npcName: string }>;
     onGroupSend: React.ComponentProps<typeof GroupRoleChatModal>['onSend'];
@@ -117,14 +118,17 @@ const RoleChatModal: React.FC<Props> = ({
     const locationConfirmed = Boolean(selectedConfirmKey && confirmedKey === selectedConfirmKey);
     const canSend = 配置就绪 && !busy && Boolean(selectedNpc) && locationConfirmed && draft.trim().length > 0;
 
-    // 只有「最后一条是本角色的 NPC 回复、其前一条是玩家发言」时才能重ROLL——
+    // 只有「最后一条是本角色的 NPC 回复、其前一条是玩家发言」时才有可重ROLL的对象——
     // 与 计算角色对话重Roll目标 的判定保持一致，避免按钮亮着却点了报错。
-    const 可重Roll = useMemo(() => {
+    const 有可重Roll对象 = useMemo(() => {
         if (当前对话.length < 2) return false;
         const 末条 = 当前对话[当前对话.length - 1];
         const 前条 = 当前对话[当前对话.length - 2];
         return 末条?.role === 'npc' && 前条?.role === 'player';
     }, [当前对话]);
+    // 重ROLL 复用上一句原话重新请求，位置同样要是「能交谈」的状态：
+    // 面板重开时 confirmedKey 会清空，若不看这一项，就会绕过普通发送必过的位置确认。
+    const 可重Roll = 有可重Roll对象 && (!selectedCheck?.需要确认 || locationConfirmed);
 
     const handleSend = async () => {
         const text = draft.trim();
@@ -158,6 +162,8 @@ const RoleChatModal: React.FC<Props> = ({
             await onReroll({
                 npcId: String(selectedNpc?.id || ''),
                 npcName: String(selectedNpc?.姓名 || ''),
+                // 入口已经被 可重Roll 的位置门槛卡住，走到这里就是玩家确认过了。
+                已确认位置: true,
                 onDelta: (_delta, accumulated) => setStreamText(accumulated)
             });
         } catch (e: any) {
@@ -367,7 +373,7 @@ const RoleChatModal: React.FC<Props> = ({
                         <span>
                             本对话暂存 {当前对话.length} 条{场外对话.length > 当前对话.length ? ` · 全部暂存 ${场外对话.length} 条` : ''}
                             {' '}· 下次提交行动时一并注入，主回合成功后自动清空
-                            {可重Roll && !busy ? ' · 不满意可点「重ROLL」重生成上一句' : ''}
+                            {可重Roll && 配置就绪 && !busy ? ' · 不满意可点「重ROLL」重生成上一句' : ''}
                         </span>
                         {loading && <span className="text-amber-300/80">主回合进行中，对话暂停</span>}
                     </div>

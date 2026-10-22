@@ -3104,6 +3104,7 @@ export const useGame = () => {
         params: {
             npcId?: string;
             npcName?: string;
+            已确认位置?: boolean;
             signal?: AbortSignal;
             onDelta?: (delta: string, accumulated: string) => void;
         }
@@ -3127,14 +3128,22 @@ export const useGame = () => {
                     npcName: params.npcName,
                     玩家输入: 目标.玩家输入,
                     暂存对话: 目标.剩余暂存,
-                    已确认位置: true,
+                    // 不写死 true：位置需要确认时由面板确认后显式传下来，
+                    // 否则「重ROLL」会绕过普通发送必过的位置确认。
+                    已确认位置: params.已确认位置 === true,
                     signal: request.controller.signal,
                     onDelta: (delta, accumulated) => {
                         if (request.version === 角色对话请求版本Ref.current) params.onDelta?.(delta, accumulated);
                     }
                 }
             );
-            if (request.version !== 角色对话请求版本Ref.current) throw new DOMException('角色对话结果已失效', 'AbortError');
+            // 停止角色对话走 stopRoleChat，它用 终止当前角色对话(false) —— 不递增版本，
+            // 而工作流在中断时会把已生成的部分文本**正常返回**（中断时保留部分）。
+            // 只看版本会把半截回复当成新回复写回，把原来那条完整回复覆盖掉，
+            // 所以这里必须连 signal.aborted 一起判。
+            if (request.controller.signal.aborted || request.version !== 角色对话请求版本Ref.current) {
+                throw new DOMException('角色对话结果已失效', 'AbortError');
+            }
             设置场外对话(() => {
                 const next = 规范化场外对话列表([...目标.剩余暂存, ...result.新增消息]);
                 场外对话Ref.current = next;
