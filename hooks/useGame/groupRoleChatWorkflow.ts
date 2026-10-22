@@ -256,7 +256,26 @@ const 生成群聊记录摘要 = async (
     if (view.待摘要消息.length === 0) return null;
     const messages = 构建摘要请求(view, { 角色名: 取文本(npc?.姓名) });
     const raw = await 执行角色对话请求带超时(
-        (innerSignal) => generateRoleChatRawReply(messages as any, roleChatApi, { signal: innerSignal, temperature: 0.2 }),
+        async (innerSignal, _onDelta, 进入非流式重试) => {
+            // 摘要会被写进事实清单，而事实清单只做并集、不删；截断的半句一旦入库就是永久污染，
+            // 所以这里和「群聊发言」走同一套完整性校验，而不是只靠外层空闲超时。
+            const 完整性结果 = await 执行带完整性校验的请求({
+                功能名: '群聊记录摘要',
+                发起流式请求: (streamOptions) => generateRoleChatRawReply(messages as any, roleChatApi, {
+                    signal: innerSignal,
+                    temperature: 0.2,
+                    streamOptions: {
+                        stream: true,
+                        onDelta: () => {},
+                        onStreamEnd: streamOptions.onStreamEnd
+                    }
+                }),
+                发起非流式请求: () => generateRoleChatRawReply(messages as any, roleChatApi, { signal: innerSignal, temperature: 0.2 }),
+                重试前重置超时: 进入非流式重试,
+                重试失败处置: '抛出错误'
+            });
+            return 完整性结果.结果;
+        },
         signal,
         { 中断时保留部分: false }
     );
