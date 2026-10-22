@@ -174,6 +174,14 @@ export const 拆分摘要事实 = (全部: string[]): { 最近: string[]; 早期
     return { 最近, 早期 };
 };
 
+/** 去掉模型输出里的标签，兜底写进摘要的内容不能带 `<事实>` 这类标记。 */
+const 去标签 = (value: string): string =>
+    String(value || '')
+        .replace(/<\/?[^<>]{1,24}>/g, ' ')
+        .replace(/[ \t]+/g, ' ')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+
 /** 解析模型输出的结构化摘要：事实清单 + 概述。 */
 export const 解析摘要输出 = (raw: string): { 事实: string[]; 概述: string } => {
     const text = String(raw || '').trim();
@@ -184,8 +192,10 @@ export const 解析摘要输出 = (raw: string): { 事实: string[]; 概述: str
         .map(line => line.replace(/^[\s\-*·•]*(?:\d+[.、)）])?\s*/u, '').trim())
         .filter(Boolean);
     const 概述 = 概述块.trim();
-    // 模型没按格式回时，退化成“整段当概述”，至少不丢内容
-    return { 事实, 概述: 概述 || (事实.length ? '' : text) };
+    // 模型没按格式回时才退化成“整段当概述”：已经抽到事实却拿整段原文当概述，
+    // 会把 `<事实>` 这类标签也写进摘要（review 第 3 条）。兜底前先去掉标签。
+    const 兜底概述 = 事实.length > 0 ? '' : 去标签(text);
+    return { 事实, 概述: 概述 || 兜底概述 };
 };
 
 /**
