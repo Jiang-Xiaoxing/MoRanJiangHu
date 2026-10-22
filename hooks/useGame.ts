@@ -64,7 +64,7 @@ import {
 import { 执行带完整性校验的请求 } from './useGame/streamIntegrity';
 import { 执行主剧情发送工作流, 提取自动重试原因文本 } from './useGame/sendWorkflow';
 import { 执行正文润色 as 执行正文润色工作流 } from './useGame/bodyPolish';
-import { 执行角色对话 as 执行角色对话工作流, 构建场外对话记录块, 规范化场外对话列表 } from './useGame/roleChatWorkflow';
+import { 执行角色对话 as 执行角色对话工作流, 计算角色对话重Roll目标, 构建场外对话记录块, 规范化场外对话列表 } from './useGame/roleChatWorkflow';
 import { 执行角色群聊 as 执行角色群聊工作流 } from './useGame/groupRoleChatWorkflow';
 import { 构建上下文快照数据 } from './useGame/contextSnapshot';
 import { 执行响应命令处理 } from './useGame/responseCommandProcessor';
@@ -3092,6 +3092,69 @@ export const useGame = () => {
         }
     };
 
+    /**
+     * 「角色对话」重ROLL：把上一次的 `[玩家原话, NPC 回复]` 从暂存里摘掉，
+     * 用同一句原话重新生成一轮，成功后再把新的那一对写回去。
+     *
+     * 与主剧情回合的 re-roll 不同：这里不消耗游戏时间、不动世界状态、不动存档，
+     * 只换一句台词，因此不需要完整快照栈，按对象定位即可。
+     * 失败/取消时暂存保持原样（改写发生在请求成功之后），旧回复不会丢。
+     */
+    const 重Roll角色对话请求 = async (
+        params: {
+            npcId?: string;
+            npcName?: string;
+            已确认位置?: boolean;
+            signal?: AbortSignal;
+            onDelta?: (delta: string, accumulated: string) => void;
+        }
+    ): Promise<{ reply: string; npcName: string }> => {
+        const 目标 = 计算角色对话重Roll目标(场外对话Ref.current, params);
+        if (!目标) throw new Error('没有可重ROLL的回复：需要上一次的发言是角色回复。');
+        const request = 创建角色对话请求(params.signal);
+        try {
+            const result = await 执行角色对话工作流(
+                {
+                    apiConfig,
+                    社交,
+                    环境,
+                    角色,
+                    历史记录,
+                    memoryConfig,
+                    prompts
+                },
+                {
+                    npcId: params.npcId,
+                    npcName: params.npcName,
+                    玩家输入: 目标.玩家输入,
+                    暂存对话: 目标.剩余暂存,
+                    // 不写死 true：位置需要确认时由面板确认后显式传下来，
+                    // 否则「重ROLL」会绕过普通发送必过的位置确认。
+                    已确认位置: params.已确认位置 === true,
+                    signal: request.controller.signal,
+                    onDelta: (delta, accumulated) => {
+                        if (request.version === 角色对话请求版本Ref.current) params.onDelta?.(delta, accumulated);
+                    }
+                }
+            );
+            // 停止角色对话走 stopRoleChat，它用 终止当前角色对话(false) —— 不递增版本，
+            // 而工作流在中断时会把已生成的部分文本**正常返回**（中断时保留部分）。
+            // 只看版本会把半截回复当成新回复写回，把原来那条完整回复覆盖掉，
+            // 所以这里必须连 signal.aborted 一起判。
+            if (request.controller.signal.aborted || request.version !== 角色对话请求版本Ref.current) {
+                throw new DOMException('角色对话结果已失效', 'AbortError');
+            }
+            设置场外对话(() => {
+                const next = 规范化场外对话列表([...目标.剩余暂存, ...result.新增消息]);
+                场外对话Ref.current = next;
+                return next;
+            });
+            return { reply: result.reply, npcName: result.npcName };
+        } finally {
+            if (角色对话AbortControllerRef.current === request.controller) 角色对话AbortControllerRef.current = null;
+        }
+    };
+
     const 执行角色群聊请求 = async (params: {
         参与者NPCIds: string[];
         玩家输入: string;
@@ -4543,6 +4606,7 @@ export const useGame = () => {
             handleRetryLatestStage,
             handlePolishTurn,
             handleRoleChatSend: 执行角色对话请求,
+            handleRoleChatReroll: 重Roll角色对话请求,
             handleGroupRoleChatSend: 执行角色群聊请求,
             stopRoleChat: () => 终止当前角色对话(false),
             discardRoleChat: () => 终止当前角色对话(true),

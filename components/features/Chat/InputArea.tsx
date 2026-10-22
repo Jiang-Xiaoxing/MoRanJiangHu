@@ -1338,7 +1338,7 @@ const InputArea: React.FC<Props> = ({
             {!rerollHintDismissed && canReroll && !busy && (
                 <div className="flex items-start gap-2 rounded-lg border border-wuxia-gold/30 bg-wuxia-gold/5 px-3 py-2">
                     <span className="flex-1 text-[11px] leading-relaxed text-wuxia-gold/90">
-                        对上一回合的回复不满意？点工具栏中的「重ROLL」回旋箭头图标，可回档到上一轮——你输入的行动会自动填回输入框，修改后重新发送即可。
+                        对上一回合的「主剧情」回复不满意？点工具栏中的「重ROLL」回旋箭头图标，可回档到上一轮——你输入的行动会自动填回输入框，修改后重新发送即可。（「角色对话」面板里的对话另有一套「重ROLL」按钮，在对话框下方。）
                     </span>
                     <button
                         type="button"

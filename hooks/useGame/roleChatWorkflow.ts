@@ -88,6 +88,50 @@ export const 规范化场外对话列表 = (raw: unknown): 场外对话消息结
 // 目标 NPC 的稳定标识：优先 id，缺 id 时退回姓名（与 解析目标NPC 的查找口径一致）。
 const 取目标NPC标识 = (npc: any): string => 取文本(npc?.id) || 取文本(npc?.姓名);
 
+export type 角色对话重Roll目标 = {
+    玩家输入: string;
+    剩余暂存: 场外对话消息结构[];
+};
+
+/**
+ * 计算「重ROLL 上一次角色回复」需要重发的输入。
+ *
+ * 角色对话的入库形态是成对的 `[玩家, NPC]`，而 `执行角色对话` 在回放暂存历史之后
+ * 还会把 `玩家输入` 再追加成最后一条 user 消息。所以要重新生成上一次的回复，
+ * 必须把那一对从暂存里摘掉、再拿玩家原话当 `玩家输入` 重发；
+ * 否则同一句话会在上下文里出现两次，模型会以为玩家说了两遍。
+ *
+ * 只在「最后一条是本角色的 NPC 回复、且其前一条是同角色的玩家发言」时才允许，
+ * 其余情况一律返回 null 让调用方禁用入口 —— 避免误删别的角色的对话或群聊记录。
+ */
+export const 计算角色对话重Roll目标 = (
+    场外对话: 场外对话消息结构[] | undefined | null,
+    params: { npcId?: string; npcName?: string }
+): 角色对话重Roll目标 | null => {
+    const 目标标识 = 取文本(params.npcId) || 取文本(params.npcName);
+    if (!目标标识) return null;
+    const 原列表 = Array.isArray(场外对话) ? 场外对话 : [];
+    // 用原始下标定位：规范化场外对话列表 会重建对象并丢弃空内容项，
+    // 拿重建后的对象回删会删错，所以这里只借它的过滤口径、保留下标。
+    const 本人下标: number[] = [];
+    原列表.forEach((item: any, index: number) => {
+        if (item?.会话类型 === 'group') return;
+        if (取文本(item?.npcId) !== 目标标识) return;
+        if (!取文本(item?.内容)) return;
+        本人下标.push(index);
+    });
+    if (本人下标.length < 2) return null;
+    const 末下标 = 本人下标[本人下标.length - 1];
+    const 前下标 = 本人下标[本人下标.length - 2];
+    if (原列表[末下标]?.role !== 'npc') return null;
+    if (原列表[前下标]?.role !== 'player') return null;
+    const 玩家输入 = 取文本(原列表[前下标]?.内容);
+    if (!玩家输入) return null;
+    const 剩余暂存 = 原列表.filter((_, index) => index !== 末下标 && index !== 前下标);
+    return { 玩家输入, 剩余暂存 };
+};
+
+
 // —— 主回合注入块：把暂存的场外对话原文 + 处理指令打包给主剧情 AI ——
 export const 构建场外对话记录块 = (
     场外对话: 场外对话消息结构[] | undefined | null,
