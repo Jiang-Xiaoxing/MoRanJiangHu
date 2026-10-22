@@ -1,4 +1,4 @@
-﻿import type { 场外对话消息结构, 群聊摘要条目 } from '../../types';
+import type { 场外对话消息结构, 群聊摘要条目 } from '../../types';
 
 /**
  * 群聊记录预算：把「你实际听到的本次群聊」从整段原文改成「最近 N 条原文 + 更早的摘要」。
@@ -166,7 +166,12 @@ export const 合并摘要事实 = (旧事实: string[] = [], 新事实: string[]
     for (const raw of [...旧事实, ...新事实]) {
         const text = String(raw || '').trim();
         if (!text) continue;
-        if (结果.some(existed => existed === text || existed.includes(text) || text.includes(existed))) continue;
+        if (结果.some(existed => existed === text)) continue;
+        // 新条目包含旧条目且更长：用新的替换旧的，别把细节丢掉。
+        const 旧索引 = 结果.findIndex(existed => text.includes(existed));
+        if (旧索引 >= 0) { 结果[旧索引] = text; continue; }
+        // 旧条目已经覆盖新内容：保留旧的。
+        if (结果.some(existed => existed.includes(text))) continue;
         结果.push(text);
     }
     return 结果.slice(-(摘要事实上限 + 早期事实上限));
@@ -185,7 +190,11 @@ export const 写入群聊摘要 = (
 ): 场外对话消息结构[] => {
     let 目标索引 = -1;
     transcript.forEach((item, index) => {
-        if (item.会话类型 === 'group' && item.时间 <= 条目.覆盖到时间) 目标索引 = index;
+        if (item.会话类型 !== 'group') return;
+        if (item.时间 > 条目.覆盖到时间) return;
+        // 摘要不能跨群落点：两个群在同一毫秒都有消息时，否则会把 A 群的摘要挂到 B 群消息上（知情边界会被破坏）。
+        if (条目.群聊ID && item.群聊ID && item.群聊ID !== 条目.群聊ID) return;
+        目标索引 = index;
     });
     if (目标索引 < 0) return transcript;
     return transcript.map((item, index) => {

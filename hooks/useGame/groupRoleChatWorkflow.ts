@@ -1,4 +1,4 @@
-import type { 场外对话消息结构, 群聊摘要条目 } from '../../types';
+﻿import type { 场外对话消息结构, 群聊摘要条目 } from '../../types';
 import { 获取角色对话接口配置, 接口配置是否可用 } from '../../utils/apiConfig';
 import { 判断角色对话位置 } from '../../utils/roleChatLocation';
 import { generateRoleChatRawReply, 清理角色对话输出 } from '../../services/ai/text';
@@ -250,6 +250,7 @@ export const 纠偏下一位 = (params: {
 const 生成群聊记录摘要 = async (
     npc: any,
     view: 群聊记录视图,
+    groupId: string,
     roleChatApi: any,
     signal?: AbortSignal
 ): Promise<群聊摘要条目 | null> => {
@@ -289,6 +290,7 @@ const 生成群聊记录摘要 = async (
     const 覆盖到时间 = view.待摘要消息.at(-1)?.时间 ?? 0;
     if (!内容 || !覆盖到时间) return null;
     return {
+        群聊ID: groupId,
         听众键: view.听众键,
         覆盖到时间,
         内容,
@@ -399,7 +401,7 @@ export const 执行角色群聊 = async (deps: 角色对话依赖, params: 角�
         try {
             let 视图: 群聊记录视图 = 构建群聊记录视图(现有记录, { groupId, npcId, audienceIds, extraSummaries: 摘要更新 });
             if (需要生成摘要(视图) || 视图.需要补课) {
-                const 条目 = await 生成群聊记录摘要(current, 视图, roleChatApi, params.signal);
+                const 条目 = await 生成群聊记录摘要(current, 视图, groupId, roleChatApi, params.signal);
                 if (条目) {
                     摘要更新.push(条目);
                     视图 = 构建群聊记录视图(现有记录, { groupId, npcId, audienceIds, extraSummaries: 摘要更新 });
