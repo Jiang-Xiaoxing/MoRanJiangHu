@@ -212,7 +212,9 @@ describe('Suspense 挂起超时边界', () => {
             /const 懒加载边界[\s\S]{0,300}<SuspenseTimeoutBoundary\s+timeoutMs=\{\d+\}\s+onDismiss=\{onDismiss\}/
         );
         // 每个 <懒加载边界> 实例都必须带 onDismiss，否则该面板超时后没有不刷新页面的出路
-        const 用法总数 = (source.match(/<懒加载边界(?=[ >\n])/g) || []).length;
+        // 行尾要容忍 \r：Windows 上 core.autocrlf=true 会把 App.tsx 落成 CRLF，
+        // 只写 [ >\n] 会让本机 0 命中、CI（LF）却通过，属测试自身对行尾格式的依赖。
+        const 用法总数 = (source.match(/<懒加载边界(?=[ >\r\n])/g) || []).length;
         const 带关闭入口 = (source.match(/<懒加载边界\s+onDismiss=/g) || []).length;
         expect(用法总数).toBeGreaterThanOrEqual(25);
         expect(带关闭入口).toBe(用法总数);

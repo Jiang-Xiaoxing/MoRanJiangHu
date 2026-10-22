@@ -71,6 +71,7 @@ const 规范化群聊摘要条目 = (raw: unknown): 群聊摘要条目[] => {
                 ...(Number.isFinite(Number(item.用量.credit)) ? { credit: Number(item.用量.credit) } : {})
             } : undefined;
             return {
+                ...(取文本(item?.群聊ID) ? { 群聊ID: 取文本(item.群聊ID) } : {}),
                 听众键,
                 覆盖到时间: Number.isFinite(Number(item?.覆盖到时间)) ? Number(item.覆盖到时间) : 0,
                 内容,

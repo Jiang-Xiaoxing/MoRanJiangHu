@@ -289,6 +289,7 @@ const 生成群聊记录摘要 = async (
     const 覆盖到时间 = view.待摘要消息.at(-1)?.时间 ?? 0;
     if (!内容 || !覆盖到时间) return null;
     return {
+        群聊ID: view.群聊ID,
         听众键: view.听众键,
         覆盖到时间,
         内容,

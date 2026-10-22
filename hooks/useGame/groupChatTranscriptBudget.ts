@@ -20,6 +20,7 @@ export const 保留原文条数 = 8;
 export const 触发摘要条数 = 16;
 
 export type 群聊记录视图 = {
+    群聊ID: string;
     听众键: string;
     摘要?: 群聊摘要条目;
     最近原文: 场外对话消息结构[];
@@ -41,10 +42,20 @@ const 取本群消息 = (transcript: 场外对话消息结构[], groupId: string
 export const 取可听消息 = (messages: 场外对话消息结构[], npcId: string): 场外对话消息结构[] =>
     messages.filter(item => Array.isArray(item.听众NPCIds) && item.听众NPCIds.includes(npcId));
 
-const 收集摘要 = (messages: 场外对话消息结构[], 听众键: string): 群聊摘要条目[] =>
+/**
+ * 摘要是否属于这个群聊。
+ * 带 `群聊ID` 的按 ID 严格比对（生成路径一定会带上）；缺该字段的走老的按时间推断，
+ * 保证旧数据/外部构造的数据不会被一刀切丢掉。
+ */
+const 摘要属于本群 = (entry: 群聊摘要条目, groupId: string): boolean =>
+    !entry.群聊ID || entry.群聊ID === groupId;
+
+const 收集摘要 = (messages: 场外对话消息结构[], 听众键: string, groupId: string): 群聊摘要条目[] =>
     messages
         .flatMap(item => Array.isArray(item.群聊摘要) ? item.群聊摘要 : [])
-        .filter(entry => entry.听众键 === 听众键)
+        // 必须同时比对群聊ID：摘要挂在「被摘要的最后一条消息」上，多群并存时
+        // 只比听众键会把 A 群的摘要读给 B 群（知情边界泄漏）。
+        .filter(entry => entry.听众键 === 听众键 && 摘要属于本群(entry, groupId))
         .sort((a, b) => a.覆盖到时间 - b.覆盖到时间);
 
 const 渲染消息 = (messages: 场外对话消息结构[]): string =>
@@ -68,7 +79,10 @@ export const 构建群聊记录视图 = (
     const 本群消息 = 取本群消息(transcript, params.groupId);
     const 可听 = 取可听消息(本群消息, params.npcId);
     const 保留条数 = Math.max(0, params.保留条数 ?? 保留原文条数);
-    const 全部摘要 = [...收集摘要(本群消息, 听众键), ...(params.extraSummaries || []).filter(entry => entry.听众键 === 听众键)]
+    const 全部摘要 = [
+        ...收集摘要(本群消息, 听众键, params.groupId),
+        ...(params.extraSummaries || []).filter(entry => entry.听众键 === 听众键 && 摘要属于本群(entry, params.groupId))
+    ]
         .sort((a, b) => a.覆盖到时间 - b.覆盖到时间);
     const 摘要 = 全部摘要.at(-1);
     const 未被覆盖 = 摘要 ? 可听.filter(item => item.时间 > 摘要.覆盖到时间) : 可听;
@@ -90,6 +104,7 @@ export const 构建群聊记录视图 = (
     const 渲染 = [摘要块, 原文块].filter(Boolean).join('\n');
 
     return {
+        群聊ID: params.groupId,
         听众键,
         摘要,
         最近原文,
@@ -185,13 +200,18 @@ export const 写入群聊摘要 = (
 ): 场外对话消息结构[] => {
     let 目标索引 = -1;
     transcript.forEach((item, index) => {
-        if (item.会话类型 === 'group' && item.时间 <= 条目.覆盖到时间) 目标索引 = index;
+        if (item.会话类型 !== 'group') return;
+        // 有群聊ID就必须同群：只按时间比较会把 A 群摘要挂到同一毫秒的 B 群消息上，
+        // 结果 A 群再也读不到（每轮重新生成），B 群反而读到别人的对话。
+        if (条目.群聊ID && item.群聊ID !== 条目.群聊ID) return;
+        if (item.时间 <= 条目.覆盖到时间) 目标索引 = index;
     });
     if (目标索引 < 0) return transcript;
     return transcript.map((item, index) => {
         if (index !== 目标索引) return item;
         const 旧 = Array.isArray(item.群聊摘要) ? item.群聊摘要 : [];
-        const 保留 = 旧.filter(entry => entry.听众键 !== 条目.听众键);
+        const 保留 = 旧.filter(entry => !(entry.听众键 === 条目.听众键
+            && (!条目.群聊ID || entry.群聊ID === 条目.群聊ID)));
         return { ...item, 群聊摘要: [...保留, 条目] };
     });
 };
