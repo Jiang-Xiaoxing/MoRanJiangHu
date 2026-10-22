@@ -408,20 +408,28 @@ export const 执行角色群聊 = async (deps: 角色对话依赖, params: 角�
         const 现有记录 = [...history, ...newMessages];
         // 群聊记录预算：最近几条原文 + 更早的摘要；摘要只在变长时生成一次，本轮内其他角色直接复用。
         let 记录文本: string | undefined;
-        try {
-            let 视图: 群聊记录视图 = 构建群聊记录视图(现有记录, { groupId, npcId, audienceIds, extraSummaries: 摘要更新 });
-            if (!摘要生成失败 && (需要生成摘要(视图) || 视图.需要补课)) {
-                const 条目 = await 生成群聊记录摘要(current, 视图, roleChatApi, params.signal);
-                if (条目) {
-                    摘要更新.push(条目);
-                    视图 = 构建群聊记录视图(现有记录, { groupId, npcId, audienceIds, extraSummaries: 摘要更新 });
-                }
-            }
-            记录文本 = 视图.渲染;
-        } catch {
-            // 摘要失败不影响发言：退回整段原文，并记下失败，本轮不再重试摘要。
-            摘要生成失败 = true;
+        if (摘要生成失败) {
+            // 本轮摘要已经失败过一次 → 统一退回整段原文。
+            // 不能再构造视图：视图在没有摘要时只渲染「最近几条原文」，更早的消息
+            // 既不进摘要也不进原文，会在失败期间被静默丢掉 —— 而那正是最需要
+            // 完整上下文的时候。只跳过生成、仍然用视图渲染是不够的。
             记录文本 = undefined;
+        } else {
+            try {
+                let 视图: 群聊记录视图 = 构建群聊记录视图(现有记录, { groupId, npcId, audienceIds, extraSummaries: 摘要更新 });
+                if (需要生成摘要(视图) || 视图.需要补课) {
+                    const 条目 = await 生成群聊记录摘要(current, 视图, roleChatApi, params.signal);
+                    if (条目) {
+                        摘要更新.push(条目);
+                        视图 = 构建群聊记录视图(现有记录, { groupId, npcId, audienceIds, extraSummaries: 摘要更新 });
+                    }
+                }
+                记录文本 = 视图.渲染;
+            } catch {
+                // 摘要失败不影响发言：退回整段原文，并记下失败，本轮不再重试摘要。
+                摘要生成失败 = true;
+                记录文本 = undefined;
+            }
         }
         const messages = 构建群聊消息序列(deps, current, participants, groupId, 现有记录, { 记录文本 });
         let raw = '';
