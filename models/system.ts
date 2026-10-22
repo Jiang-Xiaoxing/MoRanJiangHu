@@ -1337,6 +1337,19 @@ export interface 聊天记录结构 {
     [key: string]: any; // Allow extensibility for structuredResponse etc.
 }
 
+// 群聊长记录的压缩摘要：按“听众集合”分别保存，只在记录变长时生成一次，之后复用。
+export interface 群聊摘要条目 {
+    听众键: string; // 听众 NPCId 排序去重后 join('|')，不同听众集合不能共用摘要
+    覆盖到时间: number; // 这份摘要覆盖到哪一条消息的时间（含）
+    内容: string; // 渲染好的摘要正文（事实清单 + 概述）
+    生成时间: number;
+    事实?: string[]; // 最近的具体事实（渲染进【要点】）
+    早期事实?: string[]; // 超出最近清单的事实，降级保留（渲染进【早期约定】），不丢弃
+    概述?: string;
+    补充课?: boolean; // 是否为“中途加入者补课”摘要
+    用量?: { promptTokens?: number; completionTokens?: number; totalTokens?: number; credit?: number };
+}
+
 // 「角色对话」侧聊暂存消息：独立模型扮演单个 NPC 的场外对话，
 // 不进入聊天记录，仅在玩家下一次提交主行动时打包注入主剧情上下文。
 export interface 场外对话消息结构 {
@@ -1347,6 +1360,7 @@ export interface 场外对话消息结构 {
     听众NPCIds?: string[]; // 群聊发言发生时实际能听见的人；新加入者不会补听旧消息
     听众?: string[];
     完成状态?: 'complete' | 'partial';
+    群聊摘要?: 群聊摘要条目[]; // 长记录压缩结果，挂在被摘要的最后一条消息上，随存档一起复用
     发言人: string; // 玩家角色名 / NPC 姓名
     内容: string;
     时间: number; // 现实时间戳 Date.now()

@@ -66,6 +66,7 @@ import { 执行主剧情发送工作流, 提取自动重试原因文本 } from '
 import { 执行正文润色 as 执行正文润色工作流 } from './useGame/bodyPolish';
 import { 执行角色对话 as 执行角色对话工作流, 计算角色对话重Roll目标, 构建场外对话记录块, 规范化场外对话列表 } from './useGame/roleChatWorkflow';
 import { 执行角色群聊 as 执行角色群聊工作流 } from './useGame/groupRoleChatWorkflow';
+import { 写入群聊摘要 } from './useGame/groupChatTranscriptBudget';
 import { 构建上下文快照数据 } from './useGame/contextSnapshot';
 import { 执行响应命令处理 } from './useGame/responseCommandProcessor';
 import { 创建会话生命周期工作流 } from './useGame/sessionLifecycleWorkflow';
@@ -3185,6 +3186,12 @@ export const useGame = () => {
                 }
             );
             if (request.version !== 角色对话请求版本Ref.current) throw new DOMException('角色群聊结果已失效', 'AbortError');
+            // 长群聊记录的摘要要写回记录，下一轮直接复用，不能每轮重新生成。
+            if (Array.isArray(result.摘要更新) && result.摘要更新.length > 0) {
+                let 记录 = 场外对话Ref.current;
+                for (const 条目 of result.摘要更新) 记录 = 写入群聊摘要(记录, 条目);
+                替换场外对话(记录);
+            }
             追加场外对话(result.新增消息);
             return result;
         } finally {
