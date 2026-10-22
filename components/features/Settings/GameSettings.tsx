@@ -1,3 +1,4 @@
+import { naturalProseSettingsService } from '../../../services/naturalProseSettingsService';
 import React, { useEffect, useRef, useState } from 'react';
 import { 游戏设置结构, 叙事平静值配置结构, 叙事状态结构 } from '../../../types';
 import GameButton from '../../ui/GameButton';
@@ -66,6 +67,29 @@ export const 提交游戏初始时间修复 = async (params: {
 };
 
 const GameSettings: React.FC<Props> = ({ settings, onSave, gameInitialTime, currentGameTime, journeyDayCount, onRepairGameInitialTime, requestConfirm, 当前性别比例, 叙事平静值配置预设, 当前叙事平静值 }) => {
+    const [naturalProseEnabled, setNaturalProseEnabled] = useState<boolean | null>(null);
+    const [naturalProseSaving, setNaturalProseSaving] = useState(false);
+    const [naturalProseError, setNaturalProseError] = useState('');
+    useEffect(() => {
+        let active = true;
+        naturalProseSettingsService.load().then(value => { if (active) setNaturalProseEnabled(value.enabled); })
+            .catch(() => { if (active) setNaturalProseError('读取失败，请重新打开设置重试。'); });
+        return () => { active = false; };
+    }, []);
+    const updateNaturalProse = async (enabled: boolean) => {
+        const previous = naturalProseEnabled;
+        setNaturalProseEnabled(enabled);
+        setNaturalProseSaving(true);
+        setNaturalProseError('');
+        try {
+            await naturalProseSettingsService.save({ enabled });
+        } catch {
+            setNaturalProseEnabled(previous);
+            setNaturalProseError('保存失败，请再次切换重试。');
+        } finally {
+            setNaturalProseSaving(false);
+        }
+    };
     const [form, setForm] = useState<游戏设置结构>(settings);
     const [wordCountDraft, setWordCountDraft] = useState(() => String(settings.字数要求 ?? ''));
     const [initialTimeDraft, setInitialTimeDraft] = useState('');
@@ -303,6 +327,7 @@ const GameSettings: React.FC<Props> = ({ settings, onSave, gameInitialTime, curr
                 <h3 className="text-wuxia-gold font-serif font-bold text-xl">游戏设定</h3>
                 {showSuccess && <span className="text-green-400 text-xs font-bold animate-pulse">✔ 设定已保存</span>}
             </div>
+
             
             <div className="space-y-3 rounded-md border border-wuxia-gold/20 bg-black/30 p-4">
                 <div className="space-y-2">
@@ -654,7 +679,7 @@ const GameSettings: React.FC<Props> = ({ settings, onSave, gameInitialTime, curr
                 <div className="flex items-center justify-between gap-4">
                     <div>
                         <div className="text-sm text-wuxia-cyan font-bold">研发 / 诊断模式</div>
-                        <div className="text-xs text-gray-400 mt-1">开启后显示运行日志、NPC 管理、变量管理、地图 NPC 调试等高级排错入口；关闭后普通玩家界面更干净。</div>
+                        <div className="text-xs text-gray-400 mt-1">开启后显示设置菜单中的「互动历史」（含记忆回溯）以及地图等界面的调试信息；关闭后普通玩家界面更干净。注：该开关不影响「上下文」入口，「上下文」与「运行日志」始终可见。</div>
                     </div>
                     <ToggleSwitch
                         checked={(form as any).启用研发诊断模式 === true}
@@ -780,6 +805,22 @@ const GameSettings: React.FC<Props> = ({ settings, onSave, gameInitialTime, curr
                         checked={form.启用防止说话 !== false}
                         onChange={(next) => 实时应用更新({ 启用防止说话: next })}
                         ariaLabel="切换防止说话"
+                    />
+                </div>
+            </div>
+
+            <div role="group" aria-label="自然文风修复" className="space-y-3 rounded-md border border-wuxia-gold/20 bg-black/30 p-4">
+                <div className="flex items-center justify-between gap-4">
+                    <div className="min-w-0">
+                        <div className="text-sm text-wuxia-cyan font-bold">自然文风修复</div>
+                        <div className="text-xs text-gray-400 mt-1">减少 AI 正文中的套路化表达、重复句式、冗余修辞和机械化描写。</div>
+                        {naturalProseError && <p role="alert" className="text-xs text-red-400 mt-1">{naturalProseError}</p>}
+                    </div>
+                    <ToggleSwitch
+                        checked={naturalProseEnabled === true}
+                        disabled={naturalProseEnabled === null || naturalProseSaving}
+                        onChange={next => { void updateNaturalProse(next); }}
+                        ariaLabel="切换自然文风修复"
                     />
                 </div>
             </div>
@@ -1039,11 +1080,11 @@ const GameSettings: React.FC<Props> = ({ settings, onSave, gameInitialTime, curr
                 <div className="flex items-center justify-between gap-4">
                     <div>
                         <div className="text-sm text-wuxia-cyan font-bold">修炼体系相关内容</div>
-                        <div className="text-xs text-gray-400 mt-1">关闭后，将停止注入境界/功法/内力/修炼相关提示词与上下文，并关闭前端功法模块；旧存档字段保留但不再重点管理。</div>
+                        <div className="text-xs text-gray-400 mt-1">关闭后，将停止注入境界/功法/内力/修炼相关提示词与上下文，并关闭前端功法模块；旧存档字段保留但不再重点管理。手动改动后，题材包声明的默认值不再覆盖你的选择。</div>
                     </div>
                     <ToggleSwitch
                         checked={form.启用修炼体系 !== false}
-                        onChange={(next) => 实时应用更新({ 启用修炼体系: next })}
+                        onChange={(next) => 实时应用更新({ 启用修炼体系: next, 启用修炼体系已手动设置: true })}
                         ariaLabel="切换修炼体系相关内容"
                     />
                 </div>

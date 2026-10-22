@@ -738,46 +738,46 @@ const MobileInventoryModal: React.FC<Props> = ({ character, openingConfig, onClo
                     role="dialog"
                     aria-label="确认更新图库"
                 >
-                    <div className="w-full max-w-md rounded-2xl border border-white/15 bg-gray-900 p-5 shadow-2xl" onClick={(event) => event.stopPropagation()}>
-                        <h3 className="mb-3 text-base font-bold text-white">确认更新图库图片？</h3>
-                        <p className="mb-3 text-xs text-gray-300">
+<div className="w-full max-w-md rounded-2xl border border-white/15 bg-gray-900 p-5 shadow-2xl [html[data-theme='day']_&]:border-gray-300 [html[data-theme='day']_&]:bg-white [html[data-theme='day']_&]:shadow-[0_18px_50px_rgba(0,0,0,0.22)]" onClick={(event) => event.stopPropagation()}>
+                        <h3 className="mb-3 text-base font-bold text-white [html[data-theme='day']_&]:text-gray-900">确认更新图库图片？</h3>
+                            <p className="mb-3 text-xs text-gray-300 [html[data-theme='day']_&]:text-gray-600">
                             物品：{selectedItem?.名称 || '未知'} ({openingConfig?.题材模式}·{selectedItem?.类型 || '未知'})
                         </p>
                         <div className="mb-3 flex items-center gap-3">
                             <div className="flex-1 text-center">
-                                <p className="mb-1 text-[10px] text-gray-400">旧图</p>
+                                <p className="mb-1 text-[10px] text-gray-400 [html[data-theme='day']_&]:text-gray-500">旧图</p>
                                 {galleryOverwriteTarget.thumbnailDataUrl ? (
-                                    <img src={galleryOverwriteTarget.thumbnailDataUrl} alt="旧图" className="mx-auto max-h-28 rounded border border-white/15 object-contain" />
+                                    <img src={galleryOverwriteTarget.thumbnailDataUrl} alt="旧图" className="mx-auto max-h-28 rounded border border-white/15 object-contain [html[data-theme='day']_&]:border-gray-300" />
                                 ) : (
-                                    <div className="mx-auto flex h-28 w-28 items-center justify-center rounded border border-white/15 bg-black/30 text-[10px] text-gray-500">无缩略图</div>
+                                    <div className="mx-auto flex h-28 w-28 items-center justify-center rounded border border-white/15 bg-black/30 text-[10px] text-gray-500 [html[data-theme='day']_&]:border-gray-300 [html[data-theme='day']_&]:bg-gray-100">无缩略图</div>
                                 )}
                             </div>
                             <div className="text-xl text-gray-500">→</div>
                             <div className="flex-1 text-center">
-                                <p className="mb-1 text-[10px] text-gray-400">新图</p>
+                                <p className="mb-1 text-[10px] text-gray-400 [html[data-theme='day']_&]:text-gray-500">新图</p>
                                 {(() => {
                                     const newSrc = 获取物品已选图标地址(selectedItem);
                                     return newSrc ? (
-                                        <img src={newSrc} alt="新图" className="mx-auto max-h-28 rounded border border-white/15 object-contain" />
+                                        <img src={newSrc} alt="新图" className="mx-auto max-h-28 rounded border border-white/15 object-contain [html[data-theme='day']_&]:border-gray-300" />
                                     ) : (
-                                        <div className="mx-auto flex h-28 w-28 items-center justify-center rounded border border-white/15 bg-black/30 text-[10px] text-gray-500">无图片</div>
+                                        <div className="mx-auto flex h-28 w-28 items-center justify-center rounded border border-white/15 bg-black/30 text-[10px] text-gray-500 [html[data-theme='day']_&]:border-gray-300 [html[data-theme='day']_&]:bg-gray-100">无图片</div>
                                     );
                                 })()}
                             </div>
                         </div>
-                        <p className="mb-3 text-center text-xs font-semibold text-amber-400">⚠️ 更新后旧图将被替换且无法恢复</p>
+                        <p className="mb-3 text-center text-xs font-semibold text-amber-400 [html[data-theme='day']_&]:text-amber-700">⚠️ 更新后旧图将被替换且无法恢复</p>
                         <div className="flex gap-2">
                             <button
                                 type="button"
                                 onClick={() => setGalleryOverwriteTarget(null)}
-                                className="flex-1 rounded border border-white/15 bg-white/5 px-3 py-2 text-xs font-bold text-gray-200"
+                                className="flex-1 rounded border border-white/15 bg-white/5 px-3 py-2 text-xs font-bold text-gray-200 [html[data-theme='day']_&]:border-gray-300 [html[data-theme='day']_&]:bg-gray-100 [html[data-theme='day']_&]:text-gray-700"
                             >
                                 取消
                             </button>
                             <button
                                 type="button"
                                 onClick={handleConfirmOverwrite}
-                                className="flex-1 rounded bg-violet-700/40 px-3 py-2 text-xs font-bold text-violet-100"
+                                className="flex-1 rounded bg-violet-700/40 px-3 py-2 text-xs font-bold text-violet-100 [html[data-theme='day']_&]:bg-violet-600 [html[data-theme='day']_&]:text-white"
                             >
                                 确认更新
                             </button>

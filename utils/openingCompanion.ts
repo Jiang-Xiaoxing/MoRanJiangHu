@@ -1,8 +1,7 @@
 import type { NPC结构, OpeningConfig, 角色数据结构 } from '../types';
+import { normalizeNpcNameKey } from './npcName';
 
-const 规范化文本键 = (value: unknown): string => (
-    typeof value === 'string' ? value.trim().replace(/\s+/g, '').toLowerCase() : ''
-);
+const 规范化文本键 = normalizeNpcNameKey;
 
 const 取文本 = (value: unknown, fallback = ''): string => (
     typeof value === 'string' && value.trim() ? value.trim() : fallback

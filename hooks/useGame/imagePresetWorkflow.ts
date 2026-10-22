@@ -413,7 +413,8 @@ export const 创建图片预设工作流 = (deps: 图片预设工作流依赖) =
         appearance: baseData?.外貌 ?? fallbackSource?.外貌描写 ?? fallbackSource?.外貌,
         body: baseData?.身材 ?? fallbackSource?.身材描写 ?? fallbackSource?.身材,
         clothing: baseData?.衣着 ?? fallbackSource?.衣着风格 ?? fallbackSource?.衣着,
-        bio: [baseData?.简介, baseData?.核心性格特征, baseData?.性格, baseData?.视觉年龄约束].filter(Boolean).join('；'),
+        // 视觉年龄约束 是上一轮解析产出的指令文本，不作为年龄判断输入（避免回灌误判 elderly）
+        bio: [baseData?.简介, baseData?.核心性格特征, baseData?.性格].filter(Boolean).join('；'),
         race: baseData?.种族 ?? fallbackSource?.种族,
         species: baseData?.血统 ?? fallbackSource?.血统,
         additionalTexts: [baseData?.灵根, baseData?.灵根资质, fallbackSource?.男娘设定, fallbackSource?.扶她设定, fallbackSource?.性转记录]

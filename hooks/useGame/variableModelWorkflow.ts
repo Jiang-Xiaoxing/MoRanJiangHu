@@ -1,3 +1,6 @@
+import { validateVariableCommandBasics, 校验变量命令角色安全 } from './variableCommandValidation';
+import { buildNpcTemplateNameContext } from '../../services/npcTemplateNameContext';
+import { normalizeNpcNameKey, isMultilingualNpcName } from '../../utils/npcName';
 import * as textAIService from '../../services/ai/text';
 import type { GameResponse, OpeningConfig, TavernCommand, 世界书结构, 内置提示词条目结构, 提示词结构 } from '../../types';
 import { 获取变量计算接口配置, 接口配置是否可用, 变量校准功能已启用, 获取展开货币系统 } from '../../utils/apiConfig';
@@ -12,14 +15,10 @@ import {
 import type { 响应命令处理状态 } from './responseCommandProcessor';
 import { 构建同人运行时提示词包 } from '../../prompts/runtime/fandom';
 import { 按功能开关过滤提示词内容, 裁剪修炼体系上下文数据 } from '../../utils/promptFeatureToggles';
-import { 构建变量路径登记提示, 校验变量命令是否登记 } from '../../utils/variableRegistry';
+import { 构建变量路径登记提示 } from '../../utils/variableRegistry';
 import { 构建女性姓名候选提示词, 收集女性姓名候选已用名 } from '../../utils/femaleNameCandidatePrompt';
-import { 提取命中新女性角色姓名黑名单 } from '../../utils/femaleNameSelector';
-import { 提取命中模板姓名黑名单, 构建模板姓名黑名单提示词 } from '../../utils/templateNameBlacklist';
-import { 检测社交删除风险命令 } from '../../utils/npcRetentionGuard';
-import { 检测NPC境界回退风险命令 } from '../../utils/npcRealmRegressionGuard';
-import { 获取境界配置 } from '../../utils/realmConfig';
-import { 检测NPC死亡判定风险命令 } from '../../utils/npcDeathGuard';
+import { 构建模板姓名黑名单提示词 } from '../../utils/templateNameBlacklist';
+import { 执行带完整性校验的请求 } from './streamIntegrity';
 
 export { 检测NPC死亡判定风险命令 } from '../../utils/npcDeathGuard';
 
@@ -70,16 +69,6 @@ export type 变量模型校准结果 = {
     model: string;
 };
 
-const 允许根路径 = [
-    'gameState.角色',
-    'gameState.环境',
-    'gameState.世界',
-    'gameState.社交',
-    'gameState.战斗',
-    'gameState.玩家门派',
-    'gameState.任务列表',
-    'gameState.约定列表'
-] as const;
 
 const 大型数组限制映射: Record<string, number> = {
     社交: 60,
@@ -104,10 +93,11 @@ const 忽略字段集合 = new Set([
     '最近生图结果'
 ]);
 
-const 清理变量模型上下文 = (value: unknown, parentKey = ''): unknown => {
+export const 清理变量模型上下文 = (value: unknown, parentKey = '', onTruncate?: (path: string) => void, path = '', maxArrayItems = Number.POSITIVE_INFINITY, excludeField?: (key: string) => boolean): unknown => {
     if (Array.isArray(value)) {
-        const limit = 大型数组限制映射[parentKey] || value.length;
-        return value.slice(0, limit).map((item) => 清理变量模型上下文(item));
+        const limit = Math.min(大型数组限制映射[parentKey] || value.length, maxArrayItems);
+        if (value.length > limit) onTruncate?.(`${path}：${value.length}项仅读取前${limit}项`);
+        return value.slice(0, limit).map((item, i) => 清理变量模型上下文(item, '', onTruncate, `${path}[${i}]`, maxArrayItems, excludeField));
     }
     if (!value || typeof value !== 'object') {
         return value;
@@ -116,8 +106,8 @@ const 清理变量模型上下文 = (value: unknown, parentKey = ''): unknown =>
     const source = value as Record<string, unknown>;
     const result: Record<string, unknown> = {};
     Object.entries(source).forEach(([key, child]) => {
-        if (忽略字段集合.has(key)) return;
-        result[key] = 清理变量模型上下文(child, key);
+        if (忽略字段集合.has(key) || excludeField?.(key)) return;
+        result[key] = 清理变量模型上下文(child, key, onTruncate, path ? `${path}.${key}` : key, maxArrayItems, excludeField);
     });
     return result;
 };
@@ -159,48 +149,11 @@ const 序列化变量模型状态 = (
 
 const 读取文本 = (value: unknown): string => (typeof value === 'string' ? value.trim() : '');
 
-const 任务奖励占位正则 = /(?:未知|不明|未明|未定|待定|待确认|暂定|另议|看情况|视情况|暂无|无奖励|无酬劳|无结算|奖励未知|未知奖励|奖励待定|待定奖励|奖励未定|未定奖励)/u;
-
-const 提取命令中的任务奖励占位 = (commands: TavernCommand[]): string[] => {
-    const issues: string[] = [];
-    const collectReward = (reward: unknown, source: string) => {
-        const list = Array.isArray(reward) ? reward : (typeof reward === 'string' ? [reward] : []);
-        list.forEach((item) => {
-            const text = 读取文本(item);
-            if (!text) return;
-            const normalized = ` ${text} `;
-            if (任务奖励占位正则.test(normalized)) {
-                issues.push(`${source} 奖励描述存在占位词“${text}”`);
-            }
-        });
-    };
-    const collectTask = (task: any, source: string) => {
-        if (!task || typeof task !== 'object') return;
-        collectReward(task.奖励描述, source);
-    };
-
-    commands.forEach((cmd: any) => {
-        const action = cmd?.action || 'set';
-        const rawKey = typeof cmd?.key === 'string' ? cmd.key : '';
-        const normalizedKey = normalizeStateCommandKey(rawKey).replace(/^gameState\./, '');
-        if (!/^任务列表(?:$|\[|\.)/.test(normalizedKey)) return;
-        if (/奖励描述$/.test(normalizedKey)) {
-            collectReward(cmd.value, normalizedKey);
-            return;
-        }
-        if ((action === 'set' || action === 'add') && normalizedKey === '任务列表' && Array.isArray(cmd.value)) {
-            cmd.value.forEach((task: any, index: number) => collectTask(task, `任务列表[${index}]`));
-            return;
-        }
-        if (action === 'push' || /^任务列表\[\d+\]$/.test(normalizedKey)) {
-            collectTask(cmd.value, normalizedKey);
-        }
-    });
-    return Array.from(new Set(issues));
-};
 
 const 标准化人物匹配文本 = (value: unknown): string => (
-    读取文本(value).replace(/\s+/g, '').replace(/[·・\-—_【】（）()《》“”"'，,。！？!?:：；;]/g, '')
+    isMultilingualNpcName(读取文本(value))
+        ? normalizeNpcNameKey(value)
+        : 读取文本(value).replace(/\s+/g, '').replace(/[·・\-—_【】（）()《》“”"'，,。！？!?:：；;]/g, '')
 );
 
 const 非人物对白发送者集合 = new Set([
@@ -215,8 +168,8 @@ const 非人物对白发送者集合 = new Set([
 ]);
 
 const 是否疑似主角发送者 = (sender: string, roleName: string): boolean => {
-    const normalized = 标准化人物匹配文本(sender);
-    const normalizedRole = 标准化人物匹配文本(roleName);
+    const normalized = normalizeNpcNameKey(sender);
+    const normalizedRole = normalizeNpcNameKey(roleName);
     if (!normalized) return true;
     if (normalizedRole && normalized === normalizedRole) return true;
     return normalized === '我' || normalized === '你' || normalized === '主角' || normalized === '玩家';
@@ -245,11 +198,20 @@ export const 查找社交NPC索引 = (socialRaw: unknown, sender: string): numbe
     if (!Array.isArray(socialRaw)) return -1;
     const target = 标准化人物匹配文本(sender);
     if (!target) return -1;
+    // 外文 sender 只匹配精确姓名/曾用名，不借身份或简介的子串推断身份。
+    if (isMultilingualNpcName(sender)) {
+        const key = normalizeNpcNameKey(sender);
+        return socialRaw.findIndex(npc => [npc?.姓名, ...(Array.isArray(npc?.曾用名) ? npc.曾用名 : [])]
+            .some(name => normalizeNpcNameKey(name) === key));
+    }
     const 取姓名候选 = (npc: any): string[] => [npc?.姓名, ...(Array.isArray(npc?.曾用名) ? npc.曾用名 : [])].map(标准化人物匹配文本).filter(Boolean);
     const 取身份候选 = (npc: any): string[] => [npc?.身份, npc?.简介].map(标准化人物匹配文本).filter(Boolean);
     const 是主要角色 = (npc: any): boolean => npc?.是否主要角色 === true;
-    // 常规命中：原名/身份/简介任一与发送者相等或互相包含（用于非主要角色，保留原有行为）
-    const 常规命中 = (candidates: string[]): boolean => candidates.some((item) => item === target || item.includes(target) || target.includes(item));
+    // 中文昵称和身份称谓沿用旧匹配；外文姓名候选不做子串匹配。
+    const 常规命中 = (candidates: string[]): boolean => candidates.some(item => item === target || item.includes(target) || target.includes(item));
+    const 常规姓名命中 = (candidates: string[]): boolean => candidates.some(item => isMultilingualNpcName(item)
+        ? normalizeNpcNameKey(item) === normalizeNpcNameKey(sender)
+        : 常规命中([item]));
     // 主要角色（女一等）姓名只接受精确相等，避免昵称子串串到女一（如“婉儿”⊆“林婉儿”）
     const 主要角色姓名命中 = (candidates: string[]): boolean => candidates.some((item) => item === target);
     // 主要角色身份/简介匹配：接受"身份包含发送者"（含精确相等，如身份'明月圣女'含'圣女'、或身份恰为'圣女'），
@@ -259,7 +221,8 @@ export const 查找社交NPC索引 = (socialRaw: unknown, sender: string): numbe
     const majorByName = socialRaw.findIndex((npc: any) => npc && typeof npc === 'object' && 是主要角色(npc) && 主要角色姓名命中(取姓名候选(npc)));
     if (majorByName >= 0) return majorByName;
     // 第二优先：非主要角色按原名/身份/简介常规双向匹配
-    const nonMajor = socialRaw.findIndex((npc: any) => npc && typeof npc === 'object' && !是主要角色(npc) && 常规命中([...取姓名候选(npc), ...取身份候选(npc)]));
+    const nonMajor = socialRaw.findIndex((npc: any) => npc && typeof npc === 'object' && !是主要角色(npc)
+        && (常规姓名命中(取姓名候选(npc)) || 常规命中(取身份候选(npc))));
     if (nonMajor >= 0) return nonMajor;
     // 第三优先：主要角色按身份/简介（仅"身份包含发送者"方向，含精确相等）匹配
     return socialRaw.findIndex((npc: any) => npc && typeof npc === 'object' && 是主要角色(npc) && 主要角色身份命中(取身份候选(npc)));
@@ -295,7 +258,7 @@ export const 构建正文对白人物审计提示 = (
     const lines = senders.map((sender) => {
         const index = 查找社交NPC索引(baseState.社交, sender);
         if (index < 0) {
-            return `- ${sender}：本回合有独立对白框，但当前 \`社交[]\` 未找到对应完整档案；必须通过 \`push 社交 = {...}\` 新建完整 NPC 档案，包含真实姓名(2-4字)、性别、年龄、境界、身份、简介、是否主要角色、是否在场、位置、记忆、天赋列表、出身背景、当前装备、背包、BUFF、DEBUFF、技艺、战斗数值与七部位状态；当前装备未确认的槽位写“无”，背包没有明确随身物就写空数组，禁止只写“剧情对话人物/未知身份/未知境界”。`;
+            return `- ${sender}：本回合有独立对白框，但当前 \`社交[]\` 未找到对应完整档案；必须通过 \`push 社交 = {...}\` 新建完整 NPC 档案，包含真实姓名（中文通常2-4字；外文保留原语言格式；已有姓名原样保留）、性别、年龄、境界、身份、简介、是否主要角色、是否在场、位置、记忆、天赋列表、出身背景、当前装备、背包、BUFF、DEBUFF、技艺、战斗数值与七部位状态；当前装备未确认的槽位写“无”，背包没有明确随身物就写空数组，禁止只写“剧情对话人物/未知身份/未知境界”。`;
         }
         const npc = Array.isArray(baseState.社交) ? (baseState.社交 as any[])[index] : null;
         const gaps = 对白人物基础缺口(npc, { xianxiaMode: options?.xianxiaMode === true });
@@ -575,49 +538,7 @@ const 序列化命令去重键 = (cmd: TavernCommand): string => {
     ].join('::');
 };
 
-const 规范化姓名键 = (value: unknown): string => (
-    typeof value === 'string'
-        ? value.trim().replace(/[\s\u3000]+/g, '')
-        : ''
-);
 
-const 提取变量命令NPC姓名改写 = (commands: TavernCommand[], currentSocial: any[]): string[] => {
-    if (!Array.isArray(commands) || !Array.isArray(currentSocial)) return [];
-    const issues: string[] = [];
-    commands.forEach((cmd: any) => {
-        if ((cmd?.action || 'set') !== 'set') return;
-        const normalizedKey = normalizeStateCommandKey(typeof cmd?.key === 'string' ? cmd.key : '').replace(/^gameState\./, '');
-        const direct = normalizedKey.match(/^社交\[(\d+)\]\.姓名$/);
-        const whole = normalizedKey.match(/^社交\[(\d+)\]$/);
-        const index = direct ? Number(direct[1]) : (whole ? Number(whole[1]) : NaN);
-        if (!Number.isInteger(index) || index < 0) return;
-        const currentName = 规范化姓名键(currentSocial[index]?.姓名);
-        const nextName = direct
-            ? 规范化姓名键(cmd?.value)
-            : 规范化姓名键(cmd?.value?.姓名);
-        if (currentName && nextName && currentName !== nextName) {
-            issues.push(`社交[${index}].姓名：${currentName} -> ${nextName}`);
-        }
-    });
-    return issues;
-};
-
-const 包含非法伪索引 = (key: string): boolean => /(?:\[(?:-?\d+|last|tail|尾项|最后一项)\])/i.test((key || '').trim())
-    && (
-        /\[-\d+\]/.test((key || '').trim())
-        || /\[(?:last|tail|尾项|最后一项)\]/i.test((key || '').trim())
-    );
-
-const 是否允许变量生成命令 = (cmd: TavernCommand): boolean => {
-    if (typeof cmd?.key !== 'string' || 包含非法伪索引(cmd.key)) return false;
-    const normalizedKey = normalizeStateCommandKey(typeof cmd?.key === 'string' ? cmd.key : '');
-    if (!normalizedKey) return false;
-    if (/^gameState\.世界\.(地图|建筑|地图建筑|地图道路|地图人物)(?:\.|\[|$)/u.test(normalizedKey)) return false;
-
-    const allowed = 允许根路径.find((root) => normalizedKey === root || normalizedKey.startsWith(`${root}.`) || normalizedKey.startsWith(`${root}[`));
-    if (!allowed) return false;
-    return cmd.action === 'add' || cmd.action === 'set' || cmd.action === 'push' || cmd.action === 'delete' || cmd.action === 'sub';
-};
 
 export const 执行变量模型校准工作流 = async (
     params: 变量模型校准参数,
@@ -631,6 +552,8 @@ export const 执行变量模型校准工作流 = async (
 
     const variableApi = 获取变量计算接口配置(deps.apiConfig);
     if (!接口配置是否可用(variableApi)) return null;
+
+    const npcNameContext = await buildNpcTemplateNameContext(params.baseState, params.openingConfig, params.playerInput);
 
     const runtimeExtraPrompt = 按功能开关过滤提示词内容(
         构建运行时额外提示词(runtimeGameConfig.额外提示词 || '', runtimeGameConfig),
@@ -691,7 +614,8 @@ export const 执行变量模型校准工作流 = async (
             extraTexts: [
                 params.playerInput,
                 runtimeGameConfig.启用NSFW模式 === true ? 名器世界书触发词 : ''
-            ]
+            ],
+            gameConfig: runtimeGameConfig
         }).combinedText, runtimeGameConfig),
         按功能开关过滤提示词内容(fandomPromptBundle.同人设定摘要, runtimeGameConfig),
         dialogueNpcAuditPrompt,
@@ -716,31 +640,65 @@ export const 执行变量模型校准工作流 = async (
         .join('\n\n');
 
     const 展开货币系统 = 获取展开货币系统(params.openingConfig?.modeRuntimeProfile);
-    const 请求变量模型 = (retryHint = '') => textAIService.generateVariableCalibrationUpdate(
-        {
-            stateJson: 序列化变量模型状态(params.baseState, {
-                survivalNeedsEnabled: 启用饱腹口渴系统,
-                cultivationSystemEnabled: 启用修炼体系
-            }),
-            expandedCurrencySystem: 展开货币系统,
-            世界: params.baseState?.世界,
-            response: params.parsedResponse,
-            calibrationRulesContext: calibrationRulesContextWithFandom,
-            worldEvolutionEnabled: params.worldEvolutionEnabled,
-            worldEvolutionUpdated: params.worldEvolutionUpdated === true,
-            builtinPromptEntries: params.builtinPromptEntries,
+    const 变量模型请求参数 = {
+        stateJson: 序列化变量模型状态(params.baseState, {
             survivalNeedsEnabled: 启用饱腹口渴系统,
-            cultivationSystemEnabled: 启用修炼体系,
-            recentRounds: params.recentRounds,
-            isOpeningRound: params.isOpeningRound === true,
-            openingTaskContext: params.openingTaskContext
-        },
-        variableApi,
-        params.signal,
-        [mergedExtraPrompt, retryHint].filter(Boolean).join('\n\n'),
-        params.onStreamDelta,
-        runtimeGameConfig.独立APIGPT模式?.变量生成 === true
-    );
+            cultivationSystemEnabled: 启用修炼体系
+        }),
+        expandedCurrencySystem: 展开货币系统,
+        世界: params.baseState?.世界,
+        response: params.parsedResponse,
+        calibrationRulesContext: calibrationRulesContextWithFandom,
+        worldEvolutionEnabled: params.worldEvolutionEnabled,
+        worldEvolutionUpdated: params.worldEvolutionUpdated === true,
+        builtinPromptEntries: params.builtinPromptEntries,
+        survivalNeedsEnabled: 启用饱腹口渴系统,
+        cultivationSystemEnabled: 启用修炼体系,
+        recentRounds: params.recentRounds,
+        isOpeningRound: params.isOpeningRound === true,
+        openingTaskContext: params.openingTaskContext
+    };
+    /**
+     * 变量模型的命令块截断后往往仍能解析出**部分合法子集**（`解析命令块` 有 JSON 修复与逐行降级），
+     * 所以 `dedupedCommands.length === 0` 的兜底不会触发，会出现「一半变量命令被静默合并」。
+     * 这里用统一的完整性保护：走流式时校验结束标记，疑似被上游掐断就降级非流式重试一次。
+     */
+    const 请求变量模型 = async (retryHint = '') => {
+        const 附加提示词 = [mergedExtraPrompt, retryHint].filter(Boolean).join('\n\n');
+        const 独立GPT模式 = runtimeGameConfig.独立APIGPT模式?.变量生成 === true;
+        const 结果 = await 执行带完整性校验的请求({
+            功能名: '变量生成',
+            强制非流式: !params.onStreamDelta,
+            // 截断的命令块仍能解析出**部分合法命令**，`dedupedCommands.length === 0` 的兜底不触发，
+            // 会静默合并一半变量命令。重试也失败时必须整体丢弃，宁可本轮不校正变量。
+            重试失败处置: '抛出错误',
+            发起流式请求: (streamOptions) => textAIService.generateVariableCalibrationUpdate(
+                变量模型请求参数,
+                variableApi,
+                params.signal,
+                附加提示词,
+                params.onStreamDelta,
+                独立GPT模式,
+                streamOptions.onStreamEnd
+            ),
+            发起非流式请求: () => textAIService.generateVariableCalibrationUpdate(
+                变量模型请求参数,
+                variableApi,
+                params.signal,
+                附加提示词,
+                undefined,
+                独立GPT模式
+            ),
+            onFallback: (info) => {
+                if (info.重试失败) {
+                    console.warn('[变量生成] 降级非流式重试仍失败，丢弃本次不完整结果', info);
+                    return;
+                }
+                console.warn('[变量生成] 流式输出疑似被上游中断，降级为非流式重新生成', info);
+            }
+        });
+        return 结果.结果;
+    };
 
     const 校验并规整变量结果 = (result: Awaited<ReturnType<typeof 请求变量模型>>): 变量模型校准结果 | null => {
         const baseCommands = Array.isArray(params.parsedResponse?.tavern_commands)
@@ -751,10 +709,9 @@ export const 执行变量模型校准工作流 = async (
         const rejectedReports: string[] = [];
         const dedupedCommands = (Array.isArray(result.commands) ? result.commands : [])
             .filter((cmd) => {
-                if (!是否允许变量生成命令(cmd)) return false;
-                const validation = 校验变量命令是否登记(cmd, params.baseState as any);
-                if (!validation.allowed) {
-                    rejectedReports.push(`已拦截未登记变量命令：${cmd.action} ${validation.normalizedKey || cmd.key}（${validation.reason || '路径未登记'}）`);
+                const validation = validateVariableCommandBasics(cmd, params.baseState);
+                if (validation) {
+                    rejectedReports.push(`已拦截未登记变量命令：${cmd.action} ${normalizeStateCommandKey(cmd.key)}（${validation.reason}）`);
                     return false;
                 }
                 return true;
@@ -766,101 +723,7 @@ export const 执行变量模型校准工作流 = async (
                 return true;
             });
 
-        const blacklistHits = 提取命中新女性角色姓名黑名单({
-            commands: dedupedCommands,
-            currentSocial: params.baseState.社交,
-            includeLogSenders: false
-        });
-        if (blacklistHits.length > 0) {
-            const message = `变量生成命中女性模板姓名黑名单：${blacklistHits.join('、')}。请重新生成变量命令，并确保正文 sender、人物称呼与社交姓名使用同一个非模板原创姓名。`;
-            const error = new Error(message);
-            (error as any).parseDetail = message;
-            throw error;
-        }
-
-        const templateNameHits = 提取命中模板姓名黑名单({
-            commands: dedupedCommands,
-            currentSocial: params.baseState.社交
-        });
-        if (templateNameHits.length > 0) {
-            const message = `变量生成命中男性/中性模板姓名黑名单：${templateNameHits.join('、')}。这些是被反复使用的模板名，请重新生成变量命令，为本局队友、伙伴、关键 NPC 起不同的原创姓名。`;
-            const error = new Error(message);
-            (error as any).parseDetail = message;
-            throw error;
-        }
-
-        const playerName = typeof params.baseState?.角色?.姓名 === 'string' ? params.baseState.角色.姓名.trim() : '';
-        if (playerName) {
-            const normalizeKey = (v: unknown): string => typeof v === 'string' ? v.trim().replace(/\s+/g, '').toLowerCase() : '';
-            const playerKey = normalizeKey(playerName);
-            const protagonistAsNpc = dedupedCommands.filter((cmd: any) => {
-                const action = cmd?.action || 'set';
-                const rawKey = typeof cmd?.key === 'string' ? cmd.key : '';
-                const normalizedKey = normalizeStateCommandKey(rawKey).replace(/^gameState\./, '');
-                // push 社交 = {...}：新增 NPC
-                if (action === 'push' && (normalizedKey === '社交' || /^社交\[/.test(normalizedKey))) {
-                    const npcName = typeof cmd.value?.姓名 === 'string' ? cmd.value.姓名.trim() : '';
-                    return npcName && normalizeKey(npcName) === playerKey;
-                }
-                // set 社交[i].姓名 = "主角名"：把既有 NPC 改名成主角
-                if (action === 'set' && /^社交\[\d+\]\.姓名$/.test(normalizedKey)) {
-                    const nextName = typeof cmd.value === 'string' ? cmd.value.trim() : '';
-                    return nextName && normalizeKey(nextName) === playerKey;
-                }
-                return false;
-            });
-            if (protagonistAsNpc.length > 0) {
-                const message = `变量生成试图将主角「${playerName}」作为 NPC 加入社交列表，这是禁止的。社交列表只存储 NPC 和配角，不包含主角。请重新生成变量命令，移除所有与主角同名的社交条目。`;
-                const error = new Error(message);
-                (error as any).parseDetail = message;
-                throw error;
-            }
-        }
-
-        const renameIssues = 提取变量命令NPC姓名改写(dedupedCommands, params.baseState.社交);
-        if (renameIssues.length > 0) {
-            const message = `变量生成试图改写已生成 NPC 姓名：${renameIssues.join('；')}。前端不会修改既有变量，请重新生成变量命令并保留已有 NPC 姓名。`;
-            const error = new Error(message);
-            (error as any).parseDetail = message;
-            throw error;
-        }
-
-        const deletionIssues = 检测社交删除风险命令(dedupedCommands, params.baseState.社交);
-        if (deletionIssues.length > 0) {
-            const message = `变量生成试图删除或替换既有 NPC：${deletionIssues.join('；')}。未经玩家手动确认，变量生成只能更新 NPC 字段，不能删除角色或整组覆盖社交列表。`;
-            const error = new Error(message);
-            (error as any).parseDetail = message;
-            throw error;
-        }
-
-        const realmRegressionIssues = 检测NPC境界回退风险命令(
-            dedupedCommands,
-            params.baseState.社交,
-            params.parsedResponse,
-            获取境界配置(params.openingConfig?.题材模式, params.openingConfig?.modeRuntimeProfile)
-        );
-        if (realmRegressionIssues.length > 0) {
-            const message = `变量生成试图无依据降低既有 NPC 境界：${realmRegressionIssues.join('；')}。NPC 的境界文案与境界层级是持久真值；只有正文明确发生永久跌境、修为被废或证实旧档案有误时才能同步降低。请重新生成变量命令。`;
-            const error = new Error(message);
-            (error as any).parseDetail = message;
-            throw error;
-        }
-
-        const rewardPlaceholderIssues = 提取命令中的任务奖励占位(dedupedCommands);
-        if (rewardPlaceholderIssues.length > 0) {
-            const message = `变量生成写入了不可结算的任务奖励：${rewardPlaceholderIssues.join('；')}。请重新生成任务变量命令：奖励描述必须明确到可显示、可结算的奖励，例如“奖励点 +100”“D级支线剧情 +1”“可分配属性点 +1”“急救包 x1”，不能写未知、待定、看情况或无奖励。`;
-            const error = new Error(message);
-            (error as any).parseDetail = message;
-            throw error;
-        }
-
-        const deathIssues = 检测NPC死亡判定风险命令(dedupedCommands, params.baseState.社交, params.parsedResponse);
-        if (deathIssues.length > 0) {
-            const message = `变量生成试图把 NPC 判定为死亡/已故，但证据不足：${deathIssues.join('；')}。死亡判定必须同时写入：当前血量归零、死亡状态、死亡时间、死亡描述；否则只能写重伤、濒死、失踪或状态未知。请重新生成变量命令。`;
-            const error = new Error(message);
-            (error as any).parseDetail = message;
-            throw error;
-        }
+        校验变量命令角色安全(dedupedCommands, { ...params, npcNameContext });
 
         const normalizedReports = [
             ...(Array.isArray(result.reports) ? result.reports : []),

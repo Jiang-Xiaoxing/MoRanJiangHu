@@ -1,7 +1,11 @@
+import { naturalProseSettingsService } from '../services/naturalProseSettingsService';
+import { naturalProseDefaults } from '../utils/naturalProse';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { 执行主剧情发送工作流 } from '../hooks/useGame/sendWorkflow';
 import * as textAIService from '../services/ai/text';
 import { 默认游戏设置 } from '../utils/gameSettings';
+
+vi.mock('../services/naturalProseSettingsService', () => ({ naturalProseSettingsService: { load: vi.fn() } }));
 
 vi.mock('../services/ai/text', async () => {
     const actual = await vi.importActual<any>('../services/ai/text');
@@ -62,6 +66,7 @@ const 深拷贝 = <T,>(value: T): T => (
 
 describe('主剧情质量审查自动重试端到端', () => {
     beforeEach(() => {
+        vi.mocked(naturalProseSettingsService.load).mockReset().mockResolvedValue({ ...naturalProseDefaults, enabled: true });
         vi.mocked(textAIService.generateStoryResponse).mockReset();
         vi.mocked(textAIService.generatePolishedBody).mockReset();
     });
@@ -79,7 +84,11 @@ describe('主剧情质量审查自动重试端到端', () => {
         ].join('\n');
 
         vi.mocked(textAIService.generateStoryResponse)
-            .mockResolvedValueOnce(构建响应(badBody, '<正文>极其重复正文</正文>') as any)
+            .mockImplementationOnce(async () => {
+                // 生成中修改配置只能在下一轮生效，当前回合重试仍使用启动快照。
+                vi.mocked(naturalProseSettingsService.load).mockResolvedValue({ ...naturalProseDefaults, enabled: false });
+                return 构建响应(badBody, '<正文>极其重复正文</正文>') as any;
+            })
             .mockResolvedValueOnce(构建响应(cleanBody, '<正文>干净重写正文</正文>') as any);
 
         let history: any[] = [];
@@ -229,6 +238,10 @@ describe('主剧情质量审查自动重试端到端', () => {
         await new Promise(resolve => setTimeout(resolve, 20));
 
         expect(result.cancelled).not.toBe(true);
+        expect(naturalProseSettingsService.load).toHaveBeenCalledTimes(1);
+        for (const call of vi.mocked(textAIService.generateStoryResponse).mock.calls) {
+            expect(call[7]?.naturalProse).toMatchObject({ enabled: true });
+        }
         expect(textAIService.generateStoryResponse).toHaveBeenCalledTimes(2);
         const systemPromptOptions = vi.mocked(deps.构建系统提示词).mock.calls[0]?.[4] as any;
         expect(systemPromptOptions.世界书附加文本?.[0]).toContain('玩家：继续。');

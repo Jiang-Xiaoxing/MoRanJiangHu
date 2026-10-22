@@ -1,3 +1,4 @@
+import { normalizeNpcNameKey } from '../utils/npcName';
 
 import {
     角色数据结构,
@@ -36,7 +37,10 @@ import {
     TavernCommand,
     叙事状态结构
 } from '../types';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { createVariableReviewActions, findVariableReviewBeforeTurn, type VariableReviewActions } from './useGame/variableReviewActions';
+import type { VariableReviewInput } from './useGame/variableReviewWorkflow';
+import { createVariableReviewConfigurationActions } from '../services/variableReviewSettingsService';
 import * as dbService from '../services/dbService';
 import * as textAIService from '../services/ai/text';
 import { 终止全部ComfyUI生图任务 } from '../services/ai/image';
@@ -57,10 +61,12 @@ import {
     应用记忆压缩结果,
     记忆压缩任务结构
 } from './useGame/memoryUtils';
+import { 执行带完整性校验的请求 } from './useGame/streamIntegrity';
 import { 执行主剧情发送工作流, 提取自动重试原因文本 } from './useGame/sendWorkflow';
 import { 执行正文润色 as 执行正文润色工作流 } from './useGame/bodyPolish';
-import { 执行角色对话 as 执行角色对话工作流, 构建场外对话记录块, 规范化场外对话列表 } from './useGame/roleChatWorkflow';
+import { 执行角色对话 as 执行角色对话工作流, 计算角色对话重Roll目标, 构建场外对话记录块, 规范化场外对话列表 } from './useGame/roleChatWorkflow';
 import { 执行角色群聊 as 执行角色群聊工作流 } from './useGame/groupRoleChatWorkflow';
+import { 写入群聊摘要 } from './useGame/groupChatTranscriptBudget';
 import { 构建上下文快照数据 } from './useGame/contextSnapshot';
 import { 执行响应命令处理 } from './useGame/responseCommandProcessor';
 import { 创建会话生命周期工作流 } from './useGame/sessionLifecycleWorkflow';
@@ -894,10 +900,10 @@ export const useGame = () => {
 
     /** 过滤社交列表中与主角同名的NPC条目 */
     const 应用同名NPC过滤 = (list: NPC结构[], playerName?: string): NPC结构[] => {
-        const key = typeof playerName === 'string' ? playerName.trim().replace(/\s+/g, '').toLowerCase() : '';
+        const key = normalizeNpcNameKey(playerName);
         if (!key) return list;
         return list.filter((npc: any) => {
-            const npcName = typeof npc?.姓名 === 'string' ? npc.姓名.trim().replace(/\s+/g, '').toLowerCase() : '';
+            const npcName = normalizeNpcNameKey(npc?.姓名);
             return !npcName || npcName !== key;
         });
     };
@@ -1344,6 +1350,46 @@ export const useGame = () => {
         return text;
     };
 
+    /**
+     * 统一发起记忆总结请求：流式完成后校验结束标记，疑似被上游掐断则自动降级非流式重试一次。
+     * 记忆总结输出通常只有几百字，非流式重试成本很低，远优于让玩家手动重来。
+     */
+    const 请求记忆总结文本 = async (
+        summaryApi: 当前可用接口结构,
+        systemPrompt: string,
+        userPrompt: string,
+        强制非流式: boolean
+    ): Promise<string> => {
+        const result = await 执行带完整性校验的请求({
+            功能名: '记忆总结',
+            强制非流式,
+            // 记忆总结一旦应用就会**替换**原始记忆条目，半截草稿被误点应用是不可恢复的数据丢失。
+            // 重试仍失败时抛错，由两条 catch 统一进入「清空草稿 + 错误提示 + review 可重试」状态。
+            重试失败处置: '抛出错误',
+            发起流式请求: (streamOptions) => textAIService.generateMemoryRecall(
+                systemPrompt,
+                userPrompt,
+                summaryApi,
+                undefined,
+                streamOptions
+            ),
+            发起非流式请求: () => textAIService.generateMemoryRecall(systemPrompt, userPrompt, summaryApi),
+            onFallback: (info) => {
+                if (info.重试失败) {
+                    console.warn('[记忆总结] 降级非流式重试仍失败，丢弃本次不完整草稿', info);
+                    return;
+                }
+                recordDiagnosticLog('warn', ['记忆总结流式被上游掐断-降级非流式重试', {
+                    sawDone: info.sawDone,
+                    finishReason: info.finishReason,
+                    已收到字符数: info.accumulatedLength
+                }]);
+                console.warn('[记忆总结] 流式输出疑似被上游中断，降级为非流式重新生成', info);
+            }
+        });
+        return result.结果;
+    };
+
     const handleStartMemorySummary = async (): Promise<void> => {
         if (!待处理记忆总结任务) return;
         const summaryApi = 获取记忆总结接口配置(apiConfig);
@@ -1357,12 +1403,11 @@ export const useGame = () => {
         set记忆总结错误('');
         try {
             const 记忆总结非流式输出 = gameConfig?.启用非流式输出 || apiConfig.功能模型占位?.记忆总结非流式输出 === true;
-            const raw = await textAIService.generateMemoryRecall(
+            const raw = await 请求记忆总结文本(
+                summaryApi,
                 task.提示词模板,
                 构建记忆总结用户提示词(task),
-                summaryApi,
-                undefined,
-                记忆总结非流式输出 ? undefined : { stream: true }
+                记忆总结非流式输出
             );
             set记忆总结草稿(清理记忆总结输出(raw));
             set记忆总结阶段('review');
@@ -1435,12 +1480,11 @@ export const useGame = () => {
         setNPC记忆总结错误('');
         try {
             const 记忆总结非流式输出 = gameConfig?.启用非流式输出 || apiConfig.功能模型占位?.记忆总结非流式输出 === true;
-            const raw = await textAIService.generateMemoryRecall(
+            const raw = await 请求记忆总结文本(
+                summaryApi,
                 currentTask.提示词模板,
                 构建NPC记忆总结用户提示词(currentTask),
-                summaryApi,
-                undefined,
-                记忆总结非流式输出 ? undefined : { stream: true }
+                记忆总结非流式输出
             );
             const cleaned = 清理记忆总结输出(raw);
             setNPC记忆总结草稿(cleaned || 构建NPC记忆总结回退文案(
@@ -2196,7 +2240,8 @@ export const useGame = () => {
             appearance: baseData?.外貌 ?? npc?.外貌描写 ?? npc?.外貌,
             body: baseData?.身材 ?? npc?.身材描写 ?? npc?.身材,
             clothing: baseData?.衣着 ?? npc?.衣着风格 ?? npc?.衣着,
-            bio: [baseData?.简介, baseData?.核心性格特征, baseData?.性格, baseData?.视觉年龄约束].filter(Boolean).join('；'),
+            // 视觉年龄约束 是上一轮解析产出的指令文本，不作为年龄判断输入（避免回灌误判 elderly）
+            bio: [baseData?.简介, baseData?.核心性格特征, baseData?.性格].filter(Boolean).join('；'),
             race: (npc as any)?.种族,
             species: (npc as any)?.血统,
             additionalTexts: [npc?.灵根, npc?.灵根资质, npc?.男娘设定, npc?.扶她设定, npc?.性转记录]
@@ -2927,6 +2972,10 @@ export const useGame = () => {
     const 是否可自动重试错误 = (error: any): boolean => {
         if (!error) return false;
         if (error?.name === 'AbortError') return false;
+        // [修复] 上游安全策略拦截（finish_reason=SAFETY 等）与输出上限零正文的错误
+        // 携带 不可重试 标记：同样内容的请求必然得到同样结果，重发只会重复消耗
+        // 输入 Token（此类请求上游照常计费）。Codex P2 审查意见。
+        if (error?.不可重试 === true) return false;
         return error instanceof textAIService.StoryResponseParseError
             || error?.name === 'StoryResponseParseError'
             || true;
@@ -3044,6 +3093,69 @@ export const useGame = () => {
         }
     };
 
+    /**
+     * 「角色对话」重ROLL：把上一次的 `[玩家原话, NPC 回复]` 从暂存里摘掉，
+     * 用同一句原话重新生成一轮，成功后再把新的那一对写回去。
+     *
+     * 与主剧情回合的 re-roll 不同：这里不消耗游戏时间、不动世界状态、不动存档，
+     * 只换一句台词，因此不需要完整快照栈，按对象定位即可。
+     * 失败/取消时暂存保持原样（改写发生在请求成功之后），旧回复不会丢。
+     */
+    const 重Roll角色对话请求 = async (
+        params: {
+            npcId?: string;
+            npcName?: string;
+            已确认位置?: boolean;
+            signal?: AbortSignal;
+            onDelta?: (delta: string, accumulated: string) => void;
+        }
+    ): Promise<{ reply: string; npcName: string }> => {
+        const 目标 = 计算角色对话重Roll目标(场外对话Ref.current, params);
+        if (!目标) throw new Error('没有可重ROLL的回复：需要上一次的发言是角色回复。');
+        const request = 创建角色对话请求(params.signal);
+        try {
+            const result = await 执行角色对话工作流(
+                {
+                    apiConfig,
+                    社交,
+                    环境,
+                    角色,
+                    历史记录,
+                    memoryConfig,
+                    prompts
+                },
+                {
+                    npcId: params.npcId,
+                    npcName: params.npcName,
+                    玩家输入: 目标.玩家输入,
+                    暂存对话: 目标.剩余暂存,
+                    // 不写死 true：位置需要确认时由面板确认后显式传下来，
+                    // 否则「重ROLL」会绕过普通发送必过的位置确认。
+                    已确认位置: params.已确认位置 === true,
+                    signal: request.controller.signal,
+                    onDelta: (delta, accumulated) => {
+                        if (request.version === 角色对话请求版本Ref.current) params.onDelta?.(delta, accumulated);
+                    }
+                }
+            );
+            // 停止角色对话走 stopRoleChat，它用 终止当前角色对话(false) —— 不递增版本，
+            // 而工作流在中断时会把已生成的部分文本**正常返回**（中断时保留部分）。
+            // 只看版本会把半截回复当成新回复写回，把原来那条完整回复覆盖掉，
+            // 所以这里必须连 signal.aborted 一起判。
+            if (request.controller.signal.aborted || request.version !== 角色对话请求版本Ref.current) {
+                throw new DOMException('角色对话结果已失效', 'AbortError');
+            }
+            设置场外对话(() => {
+                const next = 规范化场外对话列表([...目标.剩余暂存, ...result.新增消息]);
+                场外对话Ref.current = next;
+                return next;
+            });
+            return { reply: result.reply, npcName: result.npcName };
+        } finally {
+            if (角色对话AbortControllerRef.current === request.controller) 角色对话AbortControllerRef.current = null;
+        }
+    };
+
     const 执行角色群聊请求 = async (params: {
         参与者NPCIds: string[];
         玩家输入: string;
@@ -3074,6 +3186,12 @@ export const useGame = () => {
                 }
             );
             if (request.version !== 角色对话请求版本Ref.current) throw new DOMException('角色群聊结果已失效', 'AbortError');
+            // 长群聊记录的摘要要写回记录，下一轮直接复用，不能每轮重新生成。
+            if (Array.isArray(result.摘要更新) && result.摘要更新.length > 0) {
+                let 记录 = 场外对话Ref.current;
+                for (const 条目 of result.摘要更新) 记录 = 写入群聊摘要(记录, 条目);
+                替换场外对话(记录);
+            }
             追加场外对话(result.新增消息);
             return result;
         } finally {
@@ -3166,10 +3284,10 @@ export const useGame = () => {
         if (missing.length === 0) return;
         let normalized = 规范化社交列表安全([...currentSocial, ...missing], { 合并同名: false });
         // 过滤与主角同名的NPC条目，防止主角被NPC化
-        const playerNameKeySect = typeof 角色?.姓名 === 'string' ? 角色.姓名.trim().replace(/\s+/g, '').toLowerCase() : '';
+        const playerNameKeySect = normalizeNpcNameKey(角色?.姓名);
         if (playerNameKeySect) {
             normalized = normalized.filter((npc: any) => {
-                const npcName = typeof npc?.姓名 === 'string' ? npc.姓名.trim().replace(/\s+/g, '').toLowerCase() : '';
+                const npcName = normalizeNpcNameKey(npc?.姓名);
                 return !npcName || npcName !== playerNameKeySect;
             });
         }
@@ -4290,6 +4408,56 @@ export const useGame = () => {
         }
     });
 
+    const variableReviewBridge = {
+        input: {
+            currentState: { 角色, 环境, 社交, 世界, 战斗, 玩家门派, 任务列表, 约定列表, 剧情, 剧情规划, 女主剧情规划, 同人剧情规划, 同人女主剧情规划, 记忆系统 },
+            history: 历史记录,
+            turnInProgress: view !== 'game' || loading || 变量生成中 || 后台队列处理中 || 世界演变更新中
+        } as VariableReviewInput,
+        dependencies: { apiConfig, gameConfig, openingConfig: 开局配置, promptPool: prompts },
+        setters: { 角色: 设置角色, 环境: 设置环境, 社交: 同步设置社交, 世界: 设置世界, 战斗: 设置战斗, 玩家门派: 设置玩家门派, 任务列表: 设置任务列表, 约定列表: 设置约定列表 },
+        performAutoSave
+    };
+    const variableReviewBridgeRef = useRef(variableReviewBridge);
+    variableReviewBridgeRef.current = variableReviewBridge;
+    const variableReviewActionsRef = useRef<VariableReviewActions | null>(null);
+    if (!variableReviewActionsRef.current) {
+        const configuration = createVariableReviewConfigurationActions(() => variableReviewBridgeRef.current.dependencies.apiConfig);
+        variableReviewActionsRef.current = { ...createVariableReviewActions({
+            getInput: () => {
+                const latest = variableReviewBridgeRef.current.input;
+                // 请求Ref即时更新，覆盖loading尚未触发React重渲染的短窗口。
+                const requestActive = [abortControllerRef.current, variableGenerationAbortControllerRef.current].some(controller => controller && !controller.signal.aborted);
+                return { ...latest, turnInProgress: latest.turnInProgress || requestActive, currentState: { ...latest.currentState, 社交: 社交Ref.current }, beforeTurn: findVariableReviewBeforeTurn(latest.history, 回合快照栈Ref.current) };
+            },
+            getDependencies: () => ({ ...variableReviewBridgeRef.current.dependencies, reviewSettings: configuration.peekSettings() }),
+            saveSettings: configuration.saveVariableReviewSettings,
+            getModelMetadata: configuration.getVariableReviewModelMetadata,
+            commitState: (next, changes) => {
+                const bridge = variableReviewBridgeRef.current;
+                const changedRoots = new Set(changes.map(change => change.path.split(/[.\[]/)[0]));
+                Object.entries(bridge.setters).forEach(([root, setter]) => {
+                    if (changedRoots.has(root)) (setter as (value: any) => void)(next[root as keyof typeof next]);
+                });
+                bridge.input = { ...bridge.input, currentState: next };
+            },
+            saveState: async (next, history) => {
+                // 显式传入全部业务域，避免React状态尚未刷新时保存旧闭包中的值。
+                const saved = await variableReviewBridgeRef.current.performAutoSave({
+                    role: next.角色, env: next.环境, social: next.社交, world: next.世界, battle: next.战斗,
+                    sect: next.玩家门派, tasks: next.任务列表, agreements: next.约定列表,
+                    story: next.剧情, storyPlan: next.剧情规划, heroinePlan: next.女主剧情规划,
+                    fandomStoryPlan: next.同人剧情规划, fandomHeroinePlan: next.同人女主剧情规划,
+                    history, force: true
+                });
+                if (!saved) throw new Error('存档入口未返回已保存的存档');
+                return saved;
+            }
+        }), ...configuration };
+    }
+    const variableReviewRevision = useMemo(() => ({}), [角色, 环境, 社交, 世界, 战斗, 玩家门派, 任务列表, 约定列表, 剧情, 剧情规划, 女主剧情规划, 同人剧情规划, 同人女主剧情规划, 记忆系统, 历史记录, loading, 变量生成中, 后台队列处理中, 世界演变更新中, view, 可重Roll计数]);
+    useEffect(() => () => variableReviewActionsRef.current?.cancelVariableReview(), []);
+
     const {
         generateNpcImageManually,
         generateNpcSecretPartImage,
@@ -4412,6 +4580,7 @@ export const useGame = () => {
             sceneImageArchive: 场景图片档案,
             sceneImageQueue: 场景生图任务队列,
             variableGenerationRunning: 变量生成中,
+            variableReviewRevision,
             postStoryQueueRunning: 后台队列处理中,
             openingMainStoryProgress: 开局主剧情进度,
             openingPolishProgress: 开局文章优化进度,
@@ -4444,6 +4613,7 @@ export const useGame = () => {
             handleRetryLatestStage,
             handlePolishTurn,
             handleRoleChatSend: 执行角色对话请求,
+            handleRoleChatReroll: 重Roll角色对话请求,
             handleGroupRoleChatSend: 执行角色群聊请求,
             stopRoleChat: () => 终止当前角色对话(false),
             discardRoleChat: () => 终止当前角色对话(true),
@@ -4464,6 +4634,7 @@ export const useGame = () => {
             uploadNpcImageToSlot,
             updateRuntimeVariableSection,
             applyRuntimeVariableCommand,
+            ...variableReviewActionsRef.current,
             handleStartNewGameWizard,
             handleGenerateWorld,
             handleQuickRestart,

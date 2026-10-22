@@ -1,3 +1,10 @@
+import type { TavernCommand } from '../../types';
+import { hasExplicitReviewTimeEvidence, reviewNarratorTimeFacts } from './variableReviewTimeEvidence';
+import { 校准角色数值范围 } from './variableCalibration';
+import { validateVariableCommandBasics, 校验变量命令角色安全, variableCommandProtectionCode, type VariableCommandRejectionCode } from './variableCommandValidation';
+import type { NpcTemplateNameContext } from '../../utils/npcTemplateNamePolicy';
+import { normalizeNpcNameKey, isMultilingualNpcName, isNpcNameFormatValid, hasNpcNamePollution, textMentionsNpcName, 是代称式NPC称呼 } from '../../utils/npcName';
+import { 是否含姓名叙事污染 } from '../../utils/dialogueSpeakerGuard';
 import {
     GameResponse,
     角色数据结构,
@@ -17,8 +24,10 @@ import { applyStateCommand, normalizeStateCommandKey } from '../../utils/stateHe
 import { 规范化任务列表自动结算 } from '../../utils/taskCompat';
 import { 结算已完成任务奖励 } from '../../utils/taskRewards';
 import { sanitizeInventoryCommand } from './inventoryCommandGuard';
+import { isDisposableReviewCleanup } from './variableReviewCleanup';
+import { approvedEquipmentReviewMoves, isApprovedEquipmentReviewCommand } from './variableReviewEquipment';
 import { 姓名含已知中文姓氏 } from '../../utils/chineseName';
-import { 合并保留既有NPC列表, 命令存在社交删除风险, 是否占位名 } from '../../utils/npcRetentionGuard';
+import { 合并保留既有NPC列表, 命令存在社交删除风险, 是否占位名, 查找姓名保护对应NPC, 检测NPC姓名改写风险命令 } from '../../utils/npcRetentionGuard';
 import { 提取NPC境界回退风险命令索引 } from '../../utils/npcRealmRegressionGuard';
 import type { 境界配置 } from '../../utils/realmConfig';
 import { 提取NPC死亡风险命令索引, 状态效果是死亡判定 } from '../../utils/npcDeathGuard';
@@ -26,6 +35,7 @@ import { 构建体内射精记录, 推进社交孕产状态, 规范化孕产时�
 import { 自动增加BaseAmount } from '../../services/auctionHouse';
 import { consumeScriptedMoneyDelta, peekScriptedMoneyDelta } from '../../utils/scriptedMoneyReconciler';
 import { 提取金钱命令字段, 同步金钱命令写入 } from './stateTransforms';
+import { 收集在档人物名集合, 校准规划关联人物一致性 } from '../../utils/planningConsistency';
 
 /** 判断是否为具体地点变更命令（多货币汇率系统用） */
 const 是否具体地点变更命令 = (key: string): boolean => {
@@ -260,7 +270,7 @@ export type 响应命令处理状态 = {
     同人女主剧情规划?: 同人女主剧情规划结构;
 };
 
-type 响应命令处理依赖 = {
+export type 响应命令处理依赖 = {
     规范化环境信息: (envLike?: any) => 环境信息结构;
     规范化社交列表: (raw?: any[], options?: { 合并同名?: boolean }) => any[];
     规范化世界状态: (raw?: any) => 世界数据结构;
@@ -291,11 +301,7 @@ type 响应命令处理依赖 = {
     命令后校准?: (state: 响应命令处理状态) => { state: 响应命令处理状态; corrections?: string[] } | 响应命令处理状态;
 };
 
-const 归一化文本键 = (value: unknown): string => (
-    typeof value === 'string'
-        ? value.trim().replace(/\s+/g, '').toLowerCase()
-        : ''
-);
+const 归一化文本键 = normalizeNpcNameKey;
 
 const 噪声对白发送者片段正则 = /(?:轻声|低声|细语|小声|柔声|温声|沉声|冷声|厉声|压低|喃喃|喃语|嘀咕|说道|说着|问道|答道|开口|补充|解释|提醒|笑着|苦笑|皱眉|抬眼|抬头|看向|望向|回头|点头|摇头|叹息|擦净|将|把|并|却|已经|刚刚)/;
 const 噪声对白发送者收尾正则 = /(?:地|着|了|道|问|说)$/;
@@ -303,7 +309,9 @@ const 噪声对白发送者完整短语正则 = /^(?:(?:他|她|它|你|我|他�
 
 const 是否噪声对白发送者 = (sender: string): boolean => {
     const name = (sender || '').trim();
-    if (!name) return true;
+    if (!name || hasNpcNamePollution(sender)) return true;
+    if (!isNpcNameFormatValid(sender) || 是否含姓名叙事污染(sender)) return true;
+    if (isMultilingualNpcName(name)) return false;
     if (/[，。！？；：、,.!?;:\s\n\r]/.test(name)) return true;
     if (/^[\u4e00-\u9fa5]{2,4}$/u.test(name) && !姓名含已知中文姓氏(name)) return true;
     if (噪声对白发送者完整短语正则.test(name)) return true;
@@ -321,7 +329,7 @@ const 是否对白NPC发送者 = (senderRaw: unknown, playerNameRaw: unknown): b
     if (/^[\u4e00-\u9fa5]{2,4}$/u.test(sender) && !姓名含已知中文姓氏(sender)) return false;
     const playerName = 归一化文本键(playerNameRaw);
     if (playerName && 归一化文本键(sender) === playerName) return false;
-    return sender.length <= 16;
+    return isMultilingualNpcName(sender) || sender.length <= 16;
 };
 
 const 稳定哈希文本 = (text: string): string => {
@@ -1383,7 +1391,7 @@ const 净化角色天赋背景命令 = (
 
 const 规范化命令姓名 = (value: unknown): string => (
     typeof value === 'string'
-        ? value.trim().replace(/[\s\u3000]+/g, '')
+        ? value.trim()
         : ''
 );
 
@@ -1406,16 +1414,50 @@ const 提取社交姓名命令索引 = (rawKey: unknown): number | null => {
     return Number.isInteger(index) && index >= 0 ? index : null;
 };
 
-const 净化社交姓名命令 = (cmd: any, currentSocial: any[]): any | null => {
+const 净化社交姓名命令 = (cmd: any, currentSocial: any[], responseFactText = '', variablePlanText = ''): any | null => {
+    if (检测NPC姓名改写风险命令([cmd], currentSocial).length > 0) return null;
+    const key = normalizeStateCommandKey(typeof cmd?.key === 'string' ? cmd.key : '');
+    // 改名只允许「临时称呼 → 真名」，且代称→真名必须在本回合正文/对白/变量规划里找到新名字。
+    const 允许本次改名 = (previousName: string, nextName: string): boolean => {
+        if (!previousName || !nextName) return true;
+        if (normalizeNpcNameKey(previousName) === normalizeNpcNameKey(nextName)) return true;
+        const 当前是占位 = 是否占位名(previousName);
+        const 当前是代称 = 是代称式NPC称呼(previousName);
+        const 目标是真名 = !是否占位名(nextName) && !是代称式NPC称呼(nextName);
+        if (!(当前是占位 || 当前是代称) || !目标是真名) return false;
+        // 占位名（角色9 / 新NPC1）回填真名是既定通道，不额外要求证据；
+        // 代称（青衣女子 / 王掌柜）长得更像人名，覆盖代价更高，必须有揭名依据。
+        if (当前是占位) return true;
+        return textMentionsNpcName(responseFactText, nextName)
+            || (variablePlanText ? textMentionsNpcName(variablePlanText, nextName) : false);
+    };
+    let 存在非法改名 = false;
+    // 完整对象更新/重复 push/数组重排也保留已有显示拼写。
+    const preserveName = (npc: any): any => {
+        const previous = 查找姓名保护对应NPC(npc, currentSocial);
+        const previousName = 规范化命令姓名(previous?.姓名);
+        const nextName = 规范化命令姓名(npc?.姓名 || npc?.名称 || npc?.name);
+        if (previousName && normalizeNpcNameKey(previousName) === normalizeNpcNameKey(nextName)) {
+            return { ...npc, 姓名: previous.姓名 };
+        }
+        if (!允许本次改名(previousName, nextName)) {
+            存在非法改名 = true;
+            return npc;
+        }
+        return npc;
+    };
+    if (/^gameState\.社交(?:\[\d+\])?$/.test(key)) {
+        const nextValue = Array.isArray(cmd?.value) ? cmd.value.map(preserveName) : preserveName(cmd?.value);
+        return 存在非法改名 ? null : { ...cmd, value: nextValue };
+    }
     const index = 提取社交姓名命令索引(cmd?.key);
     if (index == null) return cmd;
     if ((cmd?.action || 'set') !== 'set') return cmd;
     const currentName = 规范化命令姓名(currentSocial?.[index]?.姓名);
     const nextName = 规范化命令姓名(cmd?.value);
-    if (!currentName || !nextName || currentName === nextName) return cmd;
-    // 占位名（如"角色9"）允许被改成真名：这正是把对话框真名回填进社交档案的通道，不能拦。
-    if (是否占位名(currentName) && !是否占位名(nextName)) return cmd;
-    return null;
+    if (!currentName || !nextName) return cmd;
+    if (normalizeNpcNameKey(currentName) === normalizeNpcNameKey(nextName)) return { ...cmd, value: currentSocial[index].姓名 };
+    return 允许本次改名(currentName, nextName) ? cmd : null;
 };
 
 // 第1层防御：拦截越界的 `set 社交[N].子字段`（N >= 当前列表长度）。
@@ -1474,19 +1516,62 @@ const 是否新增社交对象命令 = (cmd: any, currentSocial?: any[]): boolea
     return true;
 };
 
+/** 由姓名派生稳定 NPC ID：同名多次出现得到同一个 ID，避免每次标准化都退化成不稳定的 npc_<下标>。 */
+const 生成NPC稳定ID = (name: string): string => {
+    let hash = 0;
+    for (let index = 0; index < name.length; index += 1) {
+        hash = (Math.imul(hash, 31) + name.charCodeAt(index)) | 0;
+    }
+    return `npc_auto_${(hash >>> 0).toString(36)}`;
+};
+
+/**
+ * 给「已经通过新增依据校验」的新 NPC 补稳定 ID。
+ * 背景：AI 的 push 社交 通常不写 id，标准化时会被填成 npc_<下标>；而姓名规范化对代称式姓名
+ * （青衣女子 / 白衣少女 / 老掌柜 等身份词结尾）要求「有稳定 ID + 有实质档案」才肯保留整条记录，
+ * 于是新档开局大量代称角色会被当成占位空壳整条丢弃。这里补 ID 后，证据链判定仍然是唯一入口：
+ * 真名在本回合正文/对白/变量规划里找不到的新增命令，仍然在上面的校验里被拒绝。
+ */
+const 补稳定NPCID = (cmd: any, name: string): any => {
+    const value = cmd?.value;
+    if (!value || typeof value !== 'object' || Array.isArray(value) || !name) return cmd;
+    const 现有小写ID = 规范化命令姓名(value?.id);
+    const 现有大写ID = 规范化命令姓名(value?.ID);
+    const 已稳定ID = [现有小写ID, 现有大写ID].find((id) => id && !/^npc_\d+$/.test(id)) || '';
+    // 标准化只读 `id`：已有一个稳定 ID 时必须回填到 `id`，否则会被兜底成 npc_<下标>。
+    // 没有任何稳定 ID 时按姓名派生（同名同 ID），并清掉残留的 npc_<下标>，避免它继续当匹配键。
+    const nextValue: any = { ...value, id: 已稳定ID || 生成NPC稳定ID(name) };
+    if (现有大写ID && /^npc_\d+$/.test(现有大写ID)) delete nextValue.ID;
+    return { ...cmd, value: nextValue };
+};
+
 const 净化新增社交命令 = (
     cmd: any,
     currentSocial: any[],
     responseFactText: string,
     dialogueSenderKeys: Set<string>,
-    playerName?: string
+    playerName?: string,
+    variablePlanText?: string
 ): any | null => {
+    const key = normalizeStateCommandKey(typeof cmd?.key === 'string' ? cmd.key : '');
+    // 所有整项写入都检查格式和叙事污染，包括整体 set；不能靠档案或正文依据绕过。
+    const invalidName = (name: unknown): boolean => typeof name === 'string'
+        && (!isNpcNameFormatValid(name) || 是否含姓名叙事污染(name) || 是否保留栏目式社交姓名(name.trim())
+            || /^(?:未命名NPC|未命名|未知|无名|角色|NPC)\d*$/iu.test(name.trim()));
+    if (/^gameState\.社交(?:\[\d+\])?$/.test(key)) {
+        const entries = Array.isArray(cmd?.value) ? cmd.value : [cmd?.value];
+        if (entries.some(npc => invalidName(npc?.姓名 || npc?.名称 || npc?.name))) return null;
+    }
+    if (/^gameState\.社交\[\d+\]\.姓名$/.test(key) && invalidName(cmd?.value)) return null;
     const nextName = 提取新增社交命令姓名(cmd);
     if (!nextName) {
         // 整体 push 社交 / 整槽 set 社交[N] 但漏写姓名 → 会造出无姓名空壳，直接丢弃；
         // 其余命令（非新增社交对象）放行交给后续逻辑。
         return 是否新增社交对象命令(cmd, currentSocial) ? null : cmd;
     }
+    // 在 trim 之前检查原始姓名，避免尾部控制字符被清理后绕过新增校验。
+    const rawName = cmd?.value?.姓名 || cmd?.value?.名称;
+    if (typeof rawName === 'string' && hasNpcNamePollution(rawName)) return null;
     if (是否保留栏目式社交姓名(nextName)) return null;
     const nextKey = 归一化文本键(nextName);
     if (playerName && nextKey === 归一化文本键(playerName)) return null;
@@ -1497,15 +1582,15 @@ const 净化新增社交命令 = (
             .includes(nextKey)
     ));
     if (existing) return cmd;
-    if (dialogueSenderKeys.has(nextKey) || responseFactText.includes(nextName)) return cmd;
+    if (dialogueSenderKeys.has(nextKey) || textMentionsNpcName(responseFactText, nextName)) return 补稳定NPCID(cmd, nextName);
+    // `<变量规划>` 与变量命令同属本回合 AI 响应：NPC 协议允许"正文用代称叙述、变量层落真实姓名"，
+    // 真名落在 `<变量规划>`（开局时它就是前台初始化说明稿）即构成合法新增依据；
+    // 变量模型自行发明、规划里也没有的名字仍然会被拦截。
+    if (variablePlanText && textMentionsNpcName(variablePlanText, nextName)) return 补稳定NPCID(cmd, nextName);
     return null;
 };
 
-const 规范化人物键 = (value: unknown): string => (
-    typeof value === 'string'
-        ? value.trim().replace(/\s+/g, '').toLowerCase()
-        : ''
-);
+const 规范化人物键 = normalizeNpcNameKey;
 
 const 明确性别集合 = new Set(['男', '女', '男娘', '扶她']);
 
@@ -1604,30 +1689,58 @@ export const 执行响应命令处理 = (
     baseState?: Partial<响应命令处理状态>,
     options?: {
         applyState?: boolean;
+        executionMode?: 'normal' | 'review-preview' | 'review-apply';
+        reviewNameContext?: NpcTemplateNameContext;
+        reviewTimeReference?: unknown;
+        onCommandDiagnostic?: (diagnostic: { command: TavernCommand; status: 'accepted' | 'rejected'; code?: VariableCommandRejectionCode; reason?: string }) => void;
         heroinePlanEnabled?: boolean;
     }
 ): 响应命令处理状态 => {
-    const shouldApplyState = options?.applyState !== false;
+    const reviewApply = options?.executionMode === 'review-apply';
+    const reviewPreview = options?.executionMode === 'review-preview' || reviewApply;
+    const equipmentReviewMoves = reviewPreview ? approvedEquipmentReviewMoves({ ...currentState, ...baseState }, response.tavern_commands || []) : [];
+    if (reviewPreview) {
+        currentState = JSON.parse(JSON.stringify(currentState));
+        baseState = baseState ? JSON.parse(JSON.stringify(baseState)) : undefined;
+        response = JSON.parse(JSON.stringify(response));
+        // 空命令审查不能借规范化修改任何状态。
+        if (!response.tavern_commands?.length) return { ...currentState, ...baseState };
+        try {
+            校验变量命令角色安全(response.tavern_commands, {
+                baseState: { ...currentState, ...baseState }, parsedResponse: response,
+                realmConfig: deps.境界配置,
+                npcNameContext: options?.reviewNameContext || { currentSocial: (baseState || currentState).社交 }
+            });
+        } catch (error: any) {
+            response.tavern_commands.forEach(command => options?.onCommandDiagnostic?.({ command, status: 'rejected', code: variableCommandProtectionCode(error.message), reason: error.message }));
+            return { ...currentState, ...baseState };
+        }
+    }
+    const shouldApplyState = !reviewPreview && options?.applyState !== false;
+    const touchedRoots = new Set<string>();
+    const executedCommands: TavernCommand[] = [];
+    const rejectCommand = (command: TavernCommand, reason: string, code: VariableCommandRejectionCode = 'safety') => options?.onCommandDiagnostic?.({ command, status: 'rejected', reason, code });
     const heroinePlanEnabled = options?.heroinePlanEnabled !== false;
     let charBuffer = baseState?.角色 || currentState.角色;
-    let envBuffer = deps.规范化环境信息(baseState?.环境 || currentState.环境);
+    let envBuffer = (reviewPreview ? (baseState?.环境 || currentState.环境) : deps.规范化环境信息(baseState?.环境 || currentState.环境));
     let socialBuffer = Array.isArray(baseState?.社交) ? baseState.社交 : currentState.社交;
-    let worldBuffer = deps.规范化世界状态(baseState?.世界 || currentState.世界);
-    let battleBuffer = deps.规范化战斗状态(baseState?.战斗 || currentState.战斗);
-    let sectBuffer = deps.规范化门派状态(baseState?.玩家门派 || currentState.玩家门派);
+    let worldBuffer = (reviewPreview ? (baseState?.世界 || currentState.世界) : deps.规范化世界状态(baseState?.世界 || currentState.世界));
+    let battleBuffer = (reviewPreview ? (baseState?.战斗 || currentState.战斗) : deps.规范化战斗状态(baseState?.战斗 || currentState.战斗));
+    let sectBuffer = (reviewPreview ? (baseState?.玩家门派 || currentState.玩家门派) : deps.规范化门派状态(baseState?.玩家门派 || currentState.玩家门派));
     let tasksBuffer = Array.isArray(baseState?.任务列表) ? baseState.任务列表 : currentState.任务列表;
     let agreementsBuffer = Array.isArray(baseState?.约定列表) ? baseState.约定列表 : currentState.约定列表;
-    let storyBuffer = deps.规范化剧情状态(baseState?.剧情 || currentState.剧情);
-    let storyPlanBuffer = deps.规范化剧情规划状态(baseState?.剧情规划 || currentState.剧情规划);
-    let heroinePlanBuffer = deps.规范化女主剧情规划状态(baseState?.女主剧情规划 ?? currentState.女主剧情规划);
-    let fandomStoryPlanBuffer = deps.规范化同人剧情规划状态(baseState?.同人剧情规划 ?? currentState.同人剧情规划);
-    let fandomHeroinePlanBuffer = deps.规范化同人女主剧情规划状态(baseState?.同人女主剧情规划 ?? currentState.同人女主剧情规划);
+    let storyBuffer = (reviewPreview ? (baseState?.剧情 || currentState.剧情) : deps.规范化剧情状态(baseState?.剧情 || currentState.剧情));
+    let storyPlanBuffer = (reviewPreview ? (baseState?.剧情规划 || currentState.剧情规划) : deps.规范化剧情规划状态(baseState?.剧情规划 || currentState.剧情规划));
+    let heroinePlanBuffer = (reviewPreview ? (baseState?.女主剧情规划 ?? currentState.女主剧情规划) : deps.规范化女主剧情规划状态(baseState?.女主剧情规划 ?? currentState.女主剧情规划));
+    let fandomStoryPlanBuffer = (reviewPreview ? (baseState?.同人剧情规划 ?? currentState.同人剧情规划) : deps.规范化同人剧情规划状态(baseState?.同人剧情规划 ?? currentState.同人剧情规划));
+    let fandomHeroinePlanBuffer = (reviewPreview ? (baseState?.同人女主剧情规划 ?? currentState.同人女主剧情规划) : deps.规范化同人女主剧情规划状态(baseState?.同人女主剧情规划 ?? currentState.同人女主剧情规划));
     const socialBeforeCommands = Array.isArray(socialBuffer) ? socialBuffer : [];
     const worldFactionsBeforeCommands = Array.isArray(worldBuffer?.势力列表) ? worldBuffer.势力列表 : [];
     const charGenderBeforeCommands = charBuffer?.性别;
     const charKungfuBeforeCommands = Array.isArray(charBuffer?.功法列表) ? charBuffer.功法列表 : [];
 
     const responseFactText = 提取响应事实文本(response);
+    const 变量规划文本 = typeof response?.t_var_plan === 'string' ? response.t_var_plan.trim() : '';
     const dialogueSenderKeys = 提取对白发送者集合(response, charBuffer?.姓名);
     if (Array.isArray(response.tavern_commands)) {
         const deathRiskCommandIndices = 提取NPC死亡风险命令索引(response.tavern_commands, socialBuffer, response);
@@ -1638,45 +1751,58 @@ export const 执行响应命令处理 = (
             deps.境界配置
         );
         response.tavern_commands.forEach((cmd, commandIndex) => {
-            if (deathRiskCommandIndices.has(commandIndex) || realmRegressionCommandIndices.has(commandIndex)) return;
-            const safeCmd = 净化新增社交命令(
-                净化越界社交索引命令(
-                净化社交姓名命令(
-                    sanitizeInventoryCommand(
-                        净化社交生理命令(
-                            净化角色天赋背景命令(
-                                净化角色装备命令(cmd, charBuffer?.装备 || {}, responseFactText),
-                                charBuffer
-                            ),
-                            responseFactText
-                        ),
-                        charBuffer,
-                        responseFactText
-                    ),
-                    socialBuffer
-                ), socialBuffer),
-                socialBuffer,
-                responseFactText,
-                dialogueSenderKeys,
-                charBuffer?.姓名
-            );
-            if (!safeCmd) return;
-            if (!heroinePlanEnabled && 是否女主规划命令(safeCmd.key)) return;
-            if (命令存在社交删除风险(safeCmd, socialBuffer)) return;
+            if (deathRiskCommandIndices.has(commandIndex) || realmRegressionCommandIndices.has(commandIndex)) {
+                rejectCommand(cmd, '死亡或境界变化证据不足', 'insufficientEvidence'); return;
+            }
+            if (reviewPreview) {
+                const issue = validateVariableCommandBasics(cmd, { 角色: charBuffer, 环境: envBuffer, 社交: socialBuffer, 世界: worldBuffer, 战斗: battleBuffer, 玩家门派: sectBuffer, 任务列表: tasksBuffer, 约定列表: agreementsBuffer }, true);
+                if (issue) { rejectCommand(cmd, issue.reason, issue.code); return; }
+                const path = normalizeStateCommandKey(cmd.key);
+                if (/^gameState\.(?:角色|环境|世界|战斗|玩家门派)$/.test(path)) { rejectCommand(cmd, '审查不允许替换完整业务对象'); return; }
+            }
+            let safeCmd: any = cmd;
+            // 普通执行与审查共用相同净化步骤；审查额外记录具体拒绝环节。
+            const stages: Array<[string, (value: any) => any]> = [
+                ['装备修改缺少正文依据', value => isApprovedEquipmentReviewCommand(value, equipmentReviewMoves) ? value : 净化角色装备命令(value, charBuffer?.装备 || {}, responseFactText)],
+                ['天赋/背景修改缺少正文依据', value => 净化角色天赋背景命令(value, charBuffer)],
+                ['生理字段缺少正文依据', value => 净化社交生理命令(value, responseFactText)],
+                ['物品命令未通过安全净化', value => {
+                    const match = normalizeStateCommandKey(value.key).match(/^gameState\.角色\.物品列表\[(\d+)\]$/u);
+                    if (reviewPreview && value.action === 'delete' && match && isDisposableReviewCleanup({
+                        ...currentState, 角色: charBuffer, 社交: socialBuffer, 世界: worldBuffer,
+                        任务列表: tasksBuffer, 约定列表: agreementsBuffer
+                    }, Number(match[1]))) return value;
+                    return sanitizeInventoryCommand(value, charBuffer, responseFactText);
+                }],
+                ['NPC 姓名修改被保护', value => 净化社交姓名命令(value, socialBuffer, responseFactText, 变量规划文本)],
+                ['越界社交索引', value => 净化越界社交索引命令(value, socialBuffer)],
+                ['NPC 姓名非法/占位/污染，或缺少正文新增依据', value => 净化新增社交命令(value, socialBuffer, responseFactText, dialogueSenderKeys, charBuffer?.姓名, 变量规划文本)]
+            ];
+            for (const [reason, sanitize] of stages) {
+                safeCmd = sanitize(safeCmd);
+                if (!safeCmd) { rejectCommand(cmd, reason, /依据/.test(reason) ? 'insufficientEvidence' : 'safety'); return; }
+            }
+            if (!heroinePlanEnabled && 是否女主规划命令(safeCmd.key)) { rejectCommand(cmd, '女主规划功能未启用'); return; }
+            if (命令存在社交删除风险(safeCmd, socialBuffer)) { rejectCommand(cmd, 'NPC 删除保护', 'npcDeletion'); return; }
             const normalizedSafeKey = normalizeStateCommandKey(typeof safeCmd.key === 'string' ? safeCmd.key : '');
             const executableCmd = normalizedSafeKey === 'gameState.社交' && safeCmd.action === 'add'
                 ? { ...safeCmd, action: 'push' as const }
                 : safeCmd;
             if (是否游戏初始时间命令(safeCmd.key)) {
-                return;
+                rejectCommand(cmd, '审查不允许更新时间'); return;
+            }
+            if (reviewPreview && /^gameState\.环境\.时间(?:[.\[]|$)/.test(normalizedSafeKey) &&
+                (normalizedSafeKey !== 'gameState.环境.时间' || safeCmd.action !== 'set' ||
+                    !hasExplicitReviewTimeEvidence(safeCmd.value, reviewNarratorTimeFacts(response.logs || []), options?.reviewTimeReference))) {
+                rejectCommand(cmd, '审查不允许更新时间：缺少可核实的明确正文时间证据', 'insufficientEvidence'); return;
             }
             if (是否环境时间命令(safeCmd.key) && safeCmd.action === 'set') {
                 if (是否时间回退或异常重置(envBuffer?.时间, safeCmd.value)) {
-                    return;
+                    rejectCommand(cmd, '时间回退或异常重置'); return;
                 }
             }
             if (safeCmd.action === 'set' && 是否缺少高层地点变更依据(safeCmd.key, envBuffer, safeCmd.value, responseFactText)) {
-                return;
+                rejectCommand(cmd, '地点变更缺少正文依据', 'insufficientEvidence'); return;
             }
             const result = applyStateCommand(
                 charBuffer,
@@ -1696,6 +1822,9 @@ export const 执行响应命令处理 = (
                 executableCmd.value,
                 executableCmd.action
             );
+            executedCommands.push(executableCmd);
+            touchedRoots.add(normalizedSafeKey.split(/[.\[]/)[1]);
+            options?.onCommandDiagnostic?.({ command: executableCmd, status: 'accepted' });
             charBuffer = result.char;
             envBuffer = result.env;
             socialBuffer = result.social;
@@ -1704,7 +1833,7 @@ export const 执行响应命令处理 = (
             sectBuffer = result.sect;
 
             // 多货币汇率系统：地点变更时触发汇率检查
-            if (safeCmd.action === 'set' && 是否具体地点变更命令(safeCmd.key)) {
+            if (!reviewPreview && safeCmd.action === 'set' && 是否具体地点变更命令(safeCmd.key)) {
                 const 当前节点 = worldBuffer?.地图层级?.find((n: any) => n.名称 === safeCmd.value);
                 if (当前节点) {
                     const 运行时配置 = deps.获取运行时配置?.();
@@ -1719,6 +1848,51 @@ export const 执行响应命令处理 = (
             fandomStoryPlanBuffer = result.fandomStoryPlan;
             fandomHeroinePlanBuffer = result.fandomHeroinePlan;
         });
+
+        if (reviewPreview) {
+            const pureEquipmentRoot = (root: string) => {
+                const commands = executedCommands.filter(command => normalizeStateCommandKey(command.key).startsWith(`gameState.${root}`));
+                return commands.length > 0 && commands.every(command => isApprovedEquipmentReviewCommand(command, equipmentReviewMoves));
+            };
+            // 只执行候选命令及必要的目标域规范化。不得进入下方回合事实补全、结算和推进链路。
+            if (touchedRoots.has('角色') && pureEquipmentRoot('角色')) {
+                // 已验证的引用归位不运行自动穿戴/物品去重，保留旧档资产与特殊字段。
+                for (const move of equipmentReviewMoves.filter(item => item.root === '角色.装备')) {
+                    charBuffer.物品列表 = charBuffer.物品列表.map((item: any) => (move.itemId ? item.ID === move.itemId || item.id === move.itemId : item.名称 === move.reference) && item.当前装备部位
+                        ? { ...item, 当前装备部位: move.target } : item);
+                }
+            } else if (touchedRoots.has('角色')) {
+                charBuffer = 同步金钱命令写入(charBuffer, 提取金钱命令字段(executedCommands));
+                // 时间纠错不能让角色规范化按新时刻触发BUFF到期或恢复结算。
+                charBuffer = deps.规范化角色物品容器映射(charBuffer, { 当前时间: baseState?.环境 || currentState.环境, ...deps.角色规范化选项 });
+                校准角色数值范围(charBuffer);
+            }
+            if (touchedRoots.has('社交') && !pureEquipmentRoot('社交')) {
+                socialBuffer = deps.规范化社交列表(socialBuffer, { 合并同名: false });
+                const retained = 合并保留既有NPC列表(socialBeforeCommands, socialBuffer, charBuffer?.姓名);
+                socialBuffer = deps.规范化社交列表(retained.列表, { 合并同名: false });
+            }
+            if (touchedRoots.has('环境')) envBuffer = deps.规范化环境信息(envBuffer);
+            if (touchedRoots.has('世界')) worldBuffer = deps.规范化世界状态(worldBuffer);
+            if (touchedRoots.has('战斗')) battleBuffer = deps.规范化战斗状态(battleBuffer);
+            if (touchedRoots.has('玩家门派')) sectBuffer = deps.规范化门派状态(sectBuffer);
+            const playerKey = normalizeNpcNameKey(charBuffer?.姓名);
+            if (touchedRoots.has('社交')) socialBuffer = socialBuffer.filter(npc => !playerKey || normalizeNpcNameKey(npc?.姓名) !== playerKey);
+            const reviewedState = { ...currentState, ...baseState, 角色: charBuffer, 环境: envBuffer, 社交: socialBuffer, 世界: worldBuffer, 战斗: battleBuffer,
+                玩家门派: sectBuffer, 任务列表: tasksBuffer, 约定列表: agreementsBuffer, 剧情: storyBuffer, 剧情规划: storyPlanBuffer,
+                女主剧情规划: heroinePlanBuffer, 同人剧情规划: fandomStoryPlanBuffer, 同人女主剧情规划: fandomHeroinePlanBuffer };
+            if (reviewApply && options?.applyState !== false) {
+                if (touchedRoots.has('角色')) deps.设置角色?.(reviewedState.角色);
+                if (touchedRoots.has('环境')) deps.设置环境?.(reviewedState.环境);
+                if (touchedRoots.has('社交')) deps.设置社交?.(reviewedState.社交);
+                if (touchedRoots.has('世界')) deps.设置世界?.(reviewedState.世界);
+                if (touchedRoots.has('战斗')) deps.设置战斗?.(reviewedState.战斗);
+                if (touchedRoots.has('玩家门派')) deps.设置玩家门派?.(reviewedState.玩家门派);
+                if (touchedRoots.has('任务列表')) deps.设置任务列表?.(reviewedState.任务列表);
+                if (touchedRoots.has('约定列表')) deps.设置约定列表?.(reviewedState.约定列表);
+            }
+            return reviewedState;
+        }
 
         // 金钱命令写穿透：AI 本回合写过的金钱字段为权威，同步三层/旧别名/baseAmount，
         // 防止随后的金钱归一化用陈旧三层字段把刚写入的别名值反向吞掉
@@ -1822,10 +1996,10 @@ export const 执行响应命令处理 = (
         storyBuffer = deps.规范化剧情状态(storyBuffer);
 
         // 过滤与主角同名的NPC条目，防止主角被NPC化（tavern_commands分支也需要此防护）
-        const playerNormKeyTavern = typeof charBuffer?.姓名 === 'string' ? charBuffer.姓名.trim().replace(/\s+/g, '').toLowerCase() : '';
+        const playerNormKeyTavern = normalizeNpcNameKey(charBuffer?.姓名);
         if (playerNormKeyTavern) {
             socialBuffer = socialBuffer.filter((npc: any) => {
-                const npcName = typeof npc?.姓名 === 'string' ? npc.姓名.trim().replace(/\s+/g, '').toLowerCase() : '';
+                const npcName = normalizeNpcNameKey(npc?.姓名);
                 return !npcName || npcName !== playerNormKeyTavern;
             });
         }
@@ -1854,6 +2028,12 @@ export const 执行响应命令处理 = (
                 return layer;
             });
         }
+
+        // 规划 ↔ 社交 一致性校准：命令写规划时可能把已退场/从未入档的角色
+        // 带回关联人物，对照本回合最终社交名单打【人物核对】标记（只标记不剔除）。
+        const 命令后在档人物名单 = 收集在档人物名集合(socialBuffer, charBuffer?.姓名);
+        校准规划关联人物一致性(storyPlanBuffer, 命令后在档人物名单);
+        校准规划关联人物一致性(fandomStoryPlanBuffer, 命令后在档人物名单);
 
         let finalState: 响应命令处理状态 = {
             角色: charBuffer,
@@ -1958,13 +2138,18 @@ export const 执行响应命令处理 = (
     );
 
     // 过滤与主角同名的NPC条目，防止主角被NPC化
-    const playerNormKey = typeof charBuffer?.姓名 === 'string' ? charBuffer.姓名.trim().replace(/\s+/g, '').toLowerCase() : '';
+    const playerNormKey = normalizeNpcNameKey(charBuffer?.姓名);
     if (playerNormKey) {
         normalizedSocial = normalizedSocial.filter((npc: any) => {
-            const npcName = typeof npc?.姓名 === 'string' ? npc.姓名.trim().replace(/\s+/g, '').toLowerCase() : '';
+            const npcName = normalizeNpcNameKey(npc?.姓名);
             return !npcName || npcName !== playerNormKey;
         });
     }
+
+    // 规划 ↔ 社交 一致性校准（同上）：对照本回合最终社交名单打【人物核对】标记。
+    const 预览在档人物名单 = 收集在档人物名集合(normalizedSocial, charBuffer?.姓名);
+    校准规划关联人物一致性(storyPlanBuffer, 预览在档人物名单);
+    校准规划关联人物一致性(fandomStoryPlanBuffer, 预览在档人物名单);
 
     let finalState: 响应命令处理状态 = {
         角色: charBuffer,

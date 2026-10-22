@@ -439,6 +439,12 @@ export interface 功能模型占位配置结构 {
     自动生图子类型启用半身?: boolean;
     自动生图子类型启用私密部位?: boolean;
     随机种子生成?: boolean; // ComfyUI 每次生图使用随机 seed 而非固定 0（默认开启）；PNG 复刻参数里的显式 seed 仍优先
+    // NPC 生图固定性别前缀自定义：留空使用内置默认（如成年女性 "1woman, female, adult woman, feminine face, female body"）；
+    // 填写后按性别整体替换内置固定前缀（英文 tags，逗号分隔），年龄感提示词仍会追加在后。
+    NPC生图固定前缀自定义_女?: string;
+    NPC生图固定前缀自定义_男?: string;
+    NPC生图固定前缀自定义_男娘?: string;
+    NPC生图固定前缀自定义_扶她?: string;
 
     生图配置档列表?: 生图配置档结构[];
     当前NPC生图配置档ID?: string;
@@ -1259,6 +1265,7 @@ export interface 游戏设置结构 {
     启用亲密边界机制: boolean; // Require consent, privacy, relationship thresholds, and character agency for intimacy
     启用饱腹口渴系统: boolean; // Toggle hunger/thirst prompt injection and UI visibility
     启用修炼体系: boolean; // Toggle cultivation/realm/kungfu prompt injection and related UI visibility
+    启用修炼体系已手动设置?: boolean; // 玩家在设置页手动改过修炼开关；为 true 时题材包默认值不再覆盖（见 utils/modeCultivationDefault.ts）
     剧情风格: 剧情风格类型; // Story style injected as assistant context before COT
     NTL后宫档位: NTL后宫档位; // NTL-only tier selector
     启用酒馆预设模式: boolean; // Use SillyTavern preset prompt/order pipeline
@@ -1330,6 +1337,20 @@ export interface 聊天记录结构 {
     [key: string]: any; // Allow extensibility for structuredResponse etc.
 }
 
+// 群聊长记录的压缩摘要：按“听众集合”分别保存，只在记录变长时生成一次，之后复用。
+export interface 群聊摘要条目 {
+    群聊ID?: string; // 摘要是哪一个群聊的；写入/读取都按它定位，避免多群并存时挂错群
+    听众键: string; // 听众 NPCId 排序去重后 join('|')，不同听众集合不能共用摘要
+    覆盖到时间: number; // 这份摘要覆盖到哪一条消息的时间（含）
+    内容: string; // 渲染好的摘要正文（事实清单 + 概述）
+    生成时间: number;
+    事实?: string[]; // 最近的具体事实（渲染进【要点】）
+    早期事实?: string[]; // 超出最近清单的事实，降级保留（渲染进【早期约定】），不丢弃
+    概述?: string;
+    补充课?: boolean; // 是否为“中途加入者补课”摘要
+    用量?: { promptTokens?: number; completionTokens?: number; totalTokens?: number; credit?: number };
+}
+
 // 「角色对话」侧聊暂存消息：独立模型扮演单个 NPC 的场外对话，
 // 不进入聊天记录，仅在玩家下一次提交主行动时打包注入主剧情上下文。
 export interface 场外对话消息结构 {
@@ -1340,6 +1361,7 @@ export interface 场外对话消息结构 {
     听众NPCIds?: string[]; // 群聊发言发生时实际能听见的人；新加入者不会补听旧消息
     听众?: string[];
     完成状态?: 'complete' | 'partial';
+    群聊摘要?: 群聊摘要条目[]; // 长记录压缩结果，挂在被摘要的最后一条消息上，随存档一起复用
     发言人: string; // 玩家角色名 / NPC 姓名
     内容: string;
     时间: number; // 现实时间戳 Date.now()

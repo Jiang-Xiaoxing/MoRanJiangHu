@@ -60,6 +60,18 @@ const 创建依赖 = (options?: { heroinePlanEnabled?: boolean }) => {
 };
 
 describe('运行时变量管理', () => {
+    it('保存分区仍保护主角撇号变体，同时保留正常词间空格差异', async () => {
+        const { deps, getSocial } = 创建依赖();
+        const workflow = 创建运行时变量工作流(deps);
+        await workflow.updateRuntimeVariableSection('角色', { 姓名: "O'Connor" });
+        await workflow.updateRuntimeVariableSection('社交', [{ 姓名: 'O’Connor', 身份: '旅人' }]);
+        expect(getSocial()).toEqual([]);
+        await workflow.applyRuntimeVariableCommand({ action: 'push', key: '社交', value: { 姓名: 'O’Connor', 身份: '旅人' } });
+        expect(getSocial()).toEqual([]);
+        await workflow.updateRuntimeVariableSection('角色', { 姓名: 'Emily Carter' });
+        await workflow.updateRuntimeVariableSection('社交', [{ 姓名: 'EmilyCarter', 身份: '旅人' }]);
+        expect(getSocial().map(npc => npc.姓名)).toEqual(['EmilyCarter']);
+    });
     it('保存社交分区时保留人工填写的主要女性正式姓名', async () => {
         const { deps, getSocial, performAutoSave } = 创建依赖();
         const workflow = 创建运行时变量工作流(deps);

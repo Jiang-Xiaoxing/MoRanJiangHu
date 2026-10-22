@@ -1,3 +1,4 @@
+import { normalizeNpcNameKey } from '../../utils/npcName';
 import type { TavernCommand } from '../../types';
 import { applyStateCommand, normalizeStateCommandKey } from '../../utils/stateHelpers';
 import { 同步剧情小说分解时间校准 } from '../../services/novelDecompositionCalibration';
@@ -198,10 +199,10 @@ export const 创建运行时变量工作流 = (deps: 运行时变量工作流依
             case '社交': {
                 let nextValue = deps.规范化社交列表(Array.isArray(value) ? value : [], { 合并同名: false, 保留非姓名库主要女性名: true });
                 // 过滤与主角同名的NPC条目，防止主角被NPC化
-                const playerName = typeof 当前状态.角色?.姓名 === 'string' ? 当前状态.角色.姓名.trim().replace(/\s+/g, '').toLowerCase() : '';
+                const playerName = normalizeNpcNameKey(当前状态.角色?.姓名);
                 if (playerName) {
                     nextValue = nextValue.filter((npc: any) => {
-                        const npcName = typeof npc?.姓名 === 'string' ? npc.姓名.trim().replace(/\s+/g, '').toLowerCase() : '';
+                        const npcName = normalizeNpcNameKey(npc?.姓名);
                         return !npcName || npcName !== playerName;
                     });
                 }
@@ -257,9 +258,7 @@ export const 创建运行时变量工作流 = (deps: 运行时变量工作流依
                 return;
             }
             case '玩家门派': {
-                const playerNameKey = typeof 当前状态.角色?.姓名 === 'string'
-                    ? 当前状态.角色.姓名.trim().replace(/\s+/g, '').toLowerCase()
-                    : '';
+                const playerNameKey = normalizeNpcNameKey(当前状态.角色?.姓名);
                 const rawSect = value && typeof value === 'object' ? { ...value } : value;
                 if (rawSect && typeof rawSect === 'object' && Array.isArray((rawSect as any).重要成员)) {
                     (rawSect as any).重要成员 = (rawSect as any).重要成员.filter((member: any) => {
@@ -267,7 +266,7 @@ export const 创建运行时变量工作流 = (deps: 运行时变量工作流依
                         if (member.是否玩家本人 === true) return false;
                         const id = String(member.id || member.ID || '').trim();
                         if (id.includes('sect_member_player_')) return false;
-                        const nameKey = typeof member.姓名 === 'string' ? member.姓名.trim().replace(/\s+/g, '').toLowerCase() : '';
+                        const nameKey = normalizeNpcNameKey(member.姓名);
                         return !playerNameKey || !nameKey || nameKey !== playerNameKey;
                     });
                 }
@@ -342,7 +341,9 @@ export const 创建运行时变量工作流 = (deps: 运行时变量工作流依
         );
         const nextEnv = deps.规范化环境信息(result.env);
         const nextChar = deps.规范化角色物品容器映射(result.char, { 当前时间: nextEnv });
-        const nextSocial = deps.规范化社交列表(result.social, { 合并同名: false, 保留非姓名库主要女性名: true });
+        const playerKey = normalizeNpcNameKey(nextChar?.姓名);
+        const nextSocial = deps.规范化社交列表(result.social, { 合并同名: false, 保留非姓名库主要女性名: true })
+            .filter((npc: any) => !playerKey || normalizeNpcNameKey(npc?.姓名) !== playerKey);
         const nextWorld = deps.规范化世界状态(result.world);
         const nextBattle = deps.规范化战斗状态(result.battle);
         const nextStory = await 同步剧情时间校准({

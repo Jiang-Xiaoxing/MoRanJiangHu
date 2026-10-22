@@ -27,6 +27,8 @@ import { 创建工作流性能诊断 } from '../../utils/performanceDebug';
 import { 后台分段执行, 后台让出主线程 } from '../../utils/backgroundScheduling';
 import { 执行游戏后台重计算 } from '../../utils/gameHeavyWorkerClient';
 import { 构建规划性别比例约束摘要 } from '../../prompts/runtime/planningAnalysis';
+import { 收集在档人物名集合, 校准规划关联人物一致性 } from '../../utils/planningConsistency';
+import { 执行带完整性校验的请求 } from './streamIntegrity';
 
 type 规划更新工作流依赖 = {
     apiConfig: any;
@@ -114,7 +116,7 @@ const 检查规划分析中断 = (signal?: AbortSignal): void => {
 };
 
 const 执行规划分析带超时 = async <T,>(
-    task: (signal: AbortSignal, markStreamActivity: () => void) => Promise<T>,
+    task: (signal: AbortSignal, markStreamActivity: () => void, 重置为首响应预算: () => void) => Promise<T>,
     parentSignal?: AbortSignal,
     requestTimeouts?: { firstResponseMs?: number; idleMs?: number }
 ): Promise<T> => {
@@ -147,6 +149,15 @@ const 执行规划分析带超时 = async <T,>(
         hasStreamActivity = true;
         resetTimer();
     };
+    /**
+     * 降级非流式重试前把计时器切回「首响应」预算。
+     * 计时器一旦进过流式模式就停在 idleMs（默认仅 10 秒），而非流式重试不产生任何增量，
+     * 不重置必然被误判成空闲超时——降级重试等于白跑。
+     */
+    const 重置为首响应预算 = () => {
+        hasStreamActivity = false;
+        resetTimer();
+    };
     const abortFromParent = () => {
         const reason = parentSignal?.reason || 创建规划分析中断错误();
         if (!controller.signal.aborted) {
@@ -157,7 +168,7 @@ const 执行规划分析带超时 = async <T,>(
     try {
         resetTimer();
         return await Promise.race([
-            task(controller.signal, markStreamActivity),
+            task(controller.signal, markStreamActivity, 重置为首响应预算),
             new Promise<T>((_, reject) => {
                 rejectTimeout = reject;
                 controller.signal.addEventListener('abort', () => reject(controller.signal.reason || timeoutError), { once: true });
@@ -183,7 +194,7 @@ const 提取规划分析重试原因 = (error: any): string => {
 };
 
 const 执行规划分析带超时和重试 = async <T,>(
-    task: (signal: AbortSignal, markStreamActivity: () => void) => Promise<T>,
+    task: (signal: AbortSignal, markStreamActivity: () => void, 重置为首响应预算: () => void) => Promise<T>,
     onRetry?: (attempt: number, maxAttempts: number, reason: string) => void,
     parentSignal?: AbortSignal,
     requestTimeouts?: { firstResponseMs?: number; idleMs?: number }
@@ -514,55 +525,64 @@ export const 创建规划更新工作流 = (deps: 规划更新工作流依赖) =
 
         await 后台让出主线程();
         检查规划分析中断(params.signal);
+        // [桥接体载体积] 这些载荷会整体经 Capacitor 原生桥下发到 APK（androidBridge.postMessage），
+        // 美化打印（space=2）会把体积撑大 30%~50%，曾把规划分析推过 Android WebView 桥上限，
+        // 报 "Java bridge method invocation error"（见 services/ai/chatCompletionClient.ts 的桥错误归一化）。
+        // 保持紧凑序列化（space=0）；若调层级/体积，先读 .workbuddy/memory 的「原生桥」条目。
         const currentStoryJson = await probe.timeAsync('序列化剧情规划载荷(worker)', () => 执行游戏后台重计算<string>(
             'stringifyTrimCultivation',
-            { value: planningStoryPayload, gameConfig: normalizedGameConfig, space: 2 },
-            () => 后台分段执行(() => JSON.stringify(planningStoryPayload, null, 2))
+            { value: planningStoryPayload, gameConfig: normalizedGameConfig, space: 0 },
+            () => 后台分段执行(() => JSON.stringify(planningStoryPayload))
         ));
         const currentHeroinePlanJson = await probe.timeAsync('序列化女主规划载荷(worker)', () => 执行游戏后台重计算<string>(
             'stringifyTrimCultivation',
-            { value: planningHeroinePayload, gameConfig: normalizedGameConfig, space: 2 },
-            () => 后台分段执行(() => JSON.stringify(planningHeroinePayload, null, 2))
+            { value: planningHeroinePayload, gameConfig: normalizedGameConfig, space: 0 },
+            () => 后台分段执行(() => JSON.stringify(planningHeroinePayload))
         ));
         const worldJson = await probe.timeAsync('序列化世界载荷(worker)', () => 执行游戏后台重计算<string>(
             'stringifyTrimCultivation',
-            { value: normalizedWorldPayload, gameConfig: normalizedGameConfig, space: 2 },
+            { value: normalizedWorldPayload, gameConfig: normalizedGameConfig, space: 0 },
             () => 后台分段执行(() => JSON.stringify(
-                裁剪修炼体系上下文数据(normalizedWorldPayload, normalizedGameConfig),
-                null,
-                2
+                裁剪修炼体系上下文数据(normalizedWorldPayload, normalizedGameConfig)
             ))
         ));
         const socialJson = await probe.timeAsync('序列化社交载荷(worker)', () => 执行游戏后台重计算<string>(
             'stringifyTrimCultivation',
-            { value: normalizedSocialPayload, gameConfig: normalizedGameConfig, space: 2 },
+            { value: normalizedSocialPayload, gameConfig: normalizedGameConfig, space: 0 },
             () => 后台分段执行(() => JSON.stringify(
-                裁剪修炼体系上下文数据(normalizedSocialPayload, normalizedGameConfig),
-                null,
-                2
+                裁剪修炼体系上下文数据(normalizedSocialPayload, normalizedGameConfig)
             ))
         ));
         const envJson = await probe.timeAsync('序列化环境载荷(worker)', () => 执行游戏后台重计算<string>(
             'stringifyTrimCultivation',
-            { value: normalizedEnvPayload, gameConfig: normalizedGameConfig, space: 2 },
+            { value: normalizedEnvPayload, gameConfig: normalizedGameConfig, space: 0 },
             () => 后台分段执行(() => JSON.stringify(
-                裁剪修炼体系上下文数据(normalizedEnvPayload, normalizedGameConfig),
-                null,
-                2
+                裁剪修炼体系上下文数据(normalizedEnvPayload, normalizedGameConfig)
             ))
         ));
+        const 审计焦点文本 = auditFocus.length > 0 ? auditFocus.join('\n') : '常规回合固定审计';
         probe.mark('规划分析请求载荷准备完成', {
             storyJsonLength: currentStoryJson.length,
             heroineJsonLength: currentHeroinePlanJson.length,
             worldJsonLength: worldJson.length,
             socialJsonLength: socialJson.length,
             envJsonLength: envJson.length,
-            extraPromptLength: planningExtraPrompt.length
+            extraPromptLength: planningExtraPrompt.length,
+            // 这是「送入模型的上下文文本总字符数」估算，不是序列化后的 requestBody 长度
+            // （原生桥告警用的是 chatCompletionClient 里的 requestBody.length，两者口径不同，
+            // 别拿这个数直接和 原生桥载荷告警字符数 比大小）。它只用来回答
+            // 「是哪一段把上下文撑大了」，所以必须覆盖请求里实际下发的每一段文本。
+            上下文文本字符数: currentStoryJson.length + currentHeroinePlanJson.length + worldJson.length
+                + socialJson.length + envJson.length + recentBodiesText.length
+                + currentPlanText.length + planningExtraPrompt.length
+                + (params.playerInput || '').length
+                + 审计焦点文本.length
+                + (genderRatioConstraintText || '').length
         });
 
         检查规划分析中断(params.signal);
         const 规划分析非流式输出 = normalizedGameConfig.启用非流式输出 || normalizedGameConfig.功能模型占位?.规划分析非流式输出;
-        const result = await probe.timeAsync('规划分析模型请求总耗时', () => 执行规划分析带超时和重试((signal, markStreamActivity) => textAIService.generatePlanningAnalysis({
+        const 规划分析请求参数 = {
             playerName: (deps.角色?.姓名 || '').trim() || '未命名',
             playerInput: params.playerInput,
             currentStoryJson,
@@ -572,24 +592,58 @@ export const 创建规划更新工作流 = (deps: 规划更新工作流依赖) =
             envJson,
             recentBodiesText,
             currentPlanText,
-            auditFocusText: auditFocus.length > 0 ? auditFocus.join('\n') : '常规回合固定审计',
+            auditFocusText: 审计焦点文本,
             genderRatioConstraintText,
             heroineEnabled,
             ntlEnabled: normalizedGameConfig.剧情风格 === 'NTL后宫',
             fandomEnabled,
             extraPrompt: planningExtraPrompt,
             gptMode: 独立规划分析GPT模式
-        }, planningApi, signal, 规划分析非流式输出 ? undefined : {
-            stream: true,
-            onDelta: (delta, accumulated) => {
-                markStreamActivity();
-                try {
-                    params.onStreamDelta?.(delta, accumulated);
-                } catch (err) {
-                    console.error('[规划分析] onStreamDelta 回调异常', err);
+        };
+        /**
+         * 规划补丁被截断后往往仍能解析出部分合法补丁，于是「规划只更新了一半」会被静默接受。
+         * 这里在既有的「超时 + 自动重试」之外再叠一层流式完整性校验：
+         * 收到结束标记就照常用，疑似被上游掐断则立刻降级非流式重试一次。
+         */
+        const result = await probe.timeAsync('规划分析模型请求总耗时', () => 执行规划分析带超时和重试(async (signal, markStreamActivity, 重置为首响应预算) => {
+            const 完整性结果 = await 执行带完整性校验的请求({
+                功能名: '规划分析',
+                强制非流式: Boolean(规划分析非流式输出),
+                // 规划补丁被截断后仍能解析出部分合法补丁，合并进去就是「规划只更新了一半」。
+                重试失败处置: '抛出错误',
+                重试前重置超时: 重置为首响应预算,
+                发起流式请求: (streamOptions) => textAIService.generatePlanningAnalysis(
+                    规划分析请求参数,
+                    planningApi,
+                    signal,
+                    {
+                        stream: true,
+                        onDelta: (delta, accumulated) => {
+                            markStreamActivity();
+                            try {
+                                params.onStreamDelta?.(delta, accumulated);
+                            } catch (err) {
+                                console.error('[规划分析] onStreamDelta 回调异常', err);
+                            }
+                        },
+                        onStreamEnd: streamOptions.onStreamEnd
+                    }
+                ),
+                发起非流式请求: () => textAIService.generatePlanningAnalysis(
+                    规划分析请求参数,
+                    planningApi,
+                    signal
+                ),
+                onFallback: (info) => {
+                    if (info.重试失败) {
+                        console.warn('[规划分析] 降级非流式重试仍失败，保留流式已收到的结果', info);
+                        return;
+                    }
+                    console.warn('[规划分析] 流式输出疑似被上游中断，降级为非流式重新生成', info);
                 }
-            }
-        }), params.onRetry, params.signal, planningRequestTimeouts), {
+            });
+            return 完整性结果.结果;
+        }, params.onRetry, params.signal, planningRequestTimeouts), {
             firstResponseTimeoutMs: planningRequestTimeouts.firstResponseMs,
             streamIdleTimeoutMs: planningRequestTimeouts.idleMs,
             maxAttempts: 规划分析自动重试最大次数
@@ -652,6 +706,19 @@ export const 创建规划更新工作流 = (deps: 规划更新工作流依赖) =
             fandomStoryPlan: params.state.同人剧情规划,
             fandomHeroinePlan: params.state.同人女主剧情规划
         }), { commandCount: commands.length }));
+        // 规划 ↔ 社交 一致性校准：规划分析会从剧情上下文把已退场/从未入档的
+        // 角色带回关联人物，落地前对照社交名单打上【人物核对】标记（只标记
+        // 不剔除，避免误伤尚未出场的合法未来规划）。
+        const 在档人物名单 = 收集在档人物名集合(params.state.社交, deps.角色?.姓名);
+        const 规划校准结果 = probe.time('校准规划关联人物一致性', () => {
+            if (fandomEnabled && patched.fandomStoryPlan) {
+                return 校准规划关联人物一致性(patched.fandomStoryPlan, 在档人物名单).变更条目数;
+            }
+            return 校准规划关联人物一致性(patched.storyPlan, 在档人物名单).变更条目数;
+        });
+        if (规划校准结果 > 0) {
+            probe.mark('规划关联人物一致性校准', { 变更条目数: 规划校准结果 });
+        }
         const syncedPatchedStory = await probe.timeAsync('同步小说分解时间校准', () => 同步剧情小说分解时间校准({
             previousStory: params.state.剧情,
             nextStory: patched.story,

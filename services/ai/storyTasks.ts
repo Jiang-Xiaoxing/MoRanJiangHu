@@ -1,3 +1,4 @@
+import { buildNaturalProsePrompt, type NaturalProseSettings } from '../../utils/naturalProse';
 import { GameResponse, TavernCommand, 内置提示词条目结构 } from '../../types';
 import type { 当前可用接口结构 } from '../../utils/apiConfig';
 import type { 小说拆分数据集结构, 小说拆分角色档案结构, 小说拆分势力档案结构, 小说拆分地图地点档案结构, 小说拆分物品档案结构 } from '../../models/novelDecomposition';
@@ -37,6 +38,7 @@ import { 同人世界演变附加系统提示词, 同人世界演变附加COT提
 import { 归一化或补全境界体系提示词, 校验境界体系提示词完整性 } from '../../prompts/runtime/fandom';
 import { 默认COT伪装历史消息提示词 } from '../../prompts/runtime/defaults';
 import { 获取变量校准COT提示词 } from '../../prompts/runtime/variableCot';
+import { buildVariableReviewMessages, type VariableReviewTaskContext } from '../../prompts/runtime/variableReview';
 import { 构建AI角色声明提示词 } from '../../prompts/runtime/roleIdentity';
 import {
     构建统一规划分析专用上下文,
@@ -88,6 +90,7 @@ export interface VariableCalibrationResult {
     commands: TavernCommand[];
     reports: string[];
     rawText: string;
+    reviewStatus?: 'noChanges' | 'insufficientEvidence' | 'changesProposed';
 }
 
 export interface PlanningAnalysisResult {
@@ -216,6 +219,7 @@ export interface StoryStreamOptions {
 }
 
 export interface StoryRequestOptions {
+    naturalProse?: NaturalProseSettings;
     enableCotInjection?: boolean;
     cotPseudoHistoryPrompt?: string;
     orderedMessages?: 通用消息[];
@@ -240,11 +244,21 @@ export interface StoryRequestOptions {
 export interface WorldStreamOptions {
     stream?: boolean;
     onDelta?: (delta: string, accumulated: string) => void;
+    /**
+     * 流结束回调。缺这个字段时下游无法判断 `sawDone`，
+     * 上游/中转中途断流会把半截文本当完整结果返回（2026-10-07 记忆总结截断问题的同一根因）。
+     */
+    onStreamEnd?: (info: 通用流式结束信息) => void;
 }
 
 interface RecallStreamOptions {
     stream?: boolean;
     onDelta?: (delta: string, accumulated: string) => void;
+    /**
+     * 流结束回调。记忆总结默认走流式，调用方需要靠它拿到 `sawDone`
+     * 判断上游是否中途断流（否则半截内容会被当成完整总结写进记忆）。
+     */
+    onStreamEnd?: (info: 通用流式结束信息) => void;
 }
 
 const 构建独立任务触发消息 = (
@@ -397,6 +411,12 @@ export const 清理角色对话输出 = (rawText: string): string => {
     return text
         .replace(/<judge>[\s\S]*?<\/judge>/gi, '')
         .replace(/<角色对话协议>[\s\S]*?<\/角色对话协议>/g, '')
+        // 只剥首尾的残留正文标签：模型双开/漏闭合时，提取后会留下孤立的
+        // <正文>/</正文> 卡在开头或结尾。不做全文替换，避免误伤剧情文本里
+        // 作为字面内容出现的 <正文>。
+        .replace(/^\s*<正文>\s*/i, '')
+        .replace(/\s*<\/正文>\s*$/i, '')
+        .replace(/\s*<正文>\s*$/i, '')
         .trim();
 };
 
@@ -912,10 +932,43 @@ export const generateWorldEvolutionUpdate = async (
     };
 };
 
+export const parseVariableReviewResponse = (rawText: string): VariableCalibrationResult => {
+    const match = rawText.trim().match(/^<说明>([\s\S]*?)<\/说明>\s*<命令>([\s\S]*?)<\/命令>$/u);
+    const fail = (): never => { throw new Error('变量审查输出协议解析失败：必须返回完整说明和命令块，不能将错误当作无修改。'); };
+    if (!match || !match[1].trim()) return fail();
+    const statuses = { '无需修改': 'noChanges', '证据不足': 'insufficientEvidence', '需要修复': 'changesProposed' } as const;
+    const firstLine = match[1].trim().split(/\r?\n/)[0].replace(/^[-*]\s*/, '').trim();
+    const status = statuses[firstLine.replace(/^状态[：:]\s*/, '') as keyof typeof statuses];
+    if (!/^状态[：:]/u.test(firstLine) || !status) return fail();
+    for (const line of match[1].split(/\r?\n/)) {
+        const finding = line.trim().match(/^(?:修复|疑点)[：:]\s*(\{.*)$/u);
+        if (!finding) continue;
+        try {
+            const value = JSON.parse(finding[1]);
+            if (typeof value.path !== 'string' || typeof value.description !== 'string' || typeof value.evidence !== 'string') return fail();
+        } catch { return fail(); }
+    }
+    const commands: TavernCommand[] = [];
+    for (const line of match[2].split(/\r?\n/).map(s => s.trim()).filter(Boolean)) {
+        const cmd = line.match(/^(set|add|sub|push|delete)\s+(\S+?)(?:\s*=\s*([\s\S]+))?$/u);
+        if (!cmd || (cmd[1] !== 'delete' && !cmd[3])) return fail();
+        let value: unknown = null;
+        if (cmd[3]) { try { value = JSON.parse(cmd[3]); } catch { return fail(); } }
+        // 复用生产命令解析器，但不接受其针对损坏输出的部分恢复结果。
+        const parsed = 解析命令块(line);
+        if (parsed.length !== 1 || parsed[0].action !== cmd[1]) return fail();
+        commands.push({ action: cmd[1] as TavernCommand['action'], key: parsed[0].key, value });
+    }
+    if ((status === 'changesProposed') !== (commands.length > 0)) return fail();
+    return { commands, reports: match[1].trim().split(/\r?\n/).filter(Boolean), rawText, reviewStatus: status };
+};
+
 export const generateVariableCalibrationUpdate = async (
     params: {
         stateJson: string;
         response: GameResponse;
+        taskMode?: 'generate' | 'review';
+        reviewContext?: VariableReviewTaskContext;
         /**
          * Variable rules / formulas / structure prompt set for the variable-generation model.
          */
@@ -948,9 +1001,23 @@ export const generateVariableCalibrationUpdate = async (
     signal?: AbortSignal,
     extraPrompt?: string,
     onStreamDelta?: (delta: string, accumulated: string) => void,
-    gptMode?: boolean
+    gptMode?: boolean,
+    /**
+     * 流结束回调。变量模型的输出是结构化命令块，截断后往往仍能解析出**部分合法子集**，
+     * `dedupedCommands.length === 0` 的兜底不会触发，于是「一半变量命令被静默合并」。
+     * 调用方必须靠它拿到 `sawDone` 才能识别断流并降级非流式重试。
+     */
+    onStreamEnd?: (info: 通用流式结束信息) => void
 ): Promise<VariableCalibrationResult> => {
     if (!apiConfig.apiKey) throw new Error('Missing API Key');
+    if (params.taskMode === 'review') {
+        if (!params.reviewContext) throw new Error('变量审查缺少审查上下文');
+        const rawText = await 请求模型文本(apiConfig, buildVariableReviewMessages(params.stateJson, params.response, params.reviewContext, params.calibrationRulesContext || ''), {
+            temperature: apiConfig.temperature ?? 0.2, variableReviewSampling: true, signal, errorDetailLimit: Number.POSITIVE_INFINITY,
+            streamOptions: onStreamDelta || onStreamEnd ? { stream: true, onDelta: onStreamDelta, onStreamEnd } : undefined
+        });
+        return parseVariableReviewResponse(rawText);
+    }
 
     const systemPrompt = 获取内置提示词槽位内容({
         entries: params.builtinPromptEntries,
@@ -1029,10 +1096,11 @@ export const generateVariableCalibrationUpdate = async (
         temperature: 0.2,
         signal,
         errorDetailLimit: Number.POSITIVE_INFINITY,
-        streamOptions: onStreamDelta
+        streamOptions: onStreamDelta || onStreamEnd
             ? {
                 stream: true,
-                onDelta: onStreamDelta
+                onDelta: onStreamDelta,
+                onStreamEnd
             }
             : undefined
     });
@@ -2152,6 +2220,13 @@ export const generateStoryResponse = async (
     requestOptions?: StoryRequestOptions
 ): Promise<StoryResponseResult> => {
     if (!apiConfig.apiKey) throw new Error('Missing API Key');
+    // 在任何异步请求之前构造字符串快照；仅正文入口使用，独立AI任务不受影响。
+    const naturalProsePrompt = buildNaturalProsePrompt(requestOptions?.naturalProse);
+    const withNaturalProse = (messages: 通用消息[]): 通用消息[] => naturalProsePrompt
+        && !messages.some(message => message.content === naturalProsePrompt)
+        ? [{ role: 'system', content: naturalProsePrompt }, ...messages]
+        : messages;
+
 
     // 流式输出被上游提前关闭（常见于内容审核拦截，例如正文出现“娼妇”等词汇时上游直接掐断流）时，
     // 记录结束信息并给错误打上“流式意外终止”标记，供外层重试逻辑自动降级为非流式请求，
@@ -2218,7 +2293,9 @@ export const generateStoryResponse = async (
         : [];
     const orderedMessages = 规范化文本补全消息链(orderedMessagesRaw, {
         保留System: true,
-        合并同角色: false
+        合并同角色: false,
+        // 尾部 system 会让部分上游返回 200 空内容（酒馆 instruct 错标/post_history 注入的已知坑）
+        尾部System转User: true
     });
 
     if (orderedMessages.length > 0) {
@@ -2248,7 +2325,7 @@ export const generateStoryResponse = async (
             ];
         })();
 
-        const rawText = await 请求模型文本(apiConfig, messagesWithRuntimeRequirements, {
+        const rawText = await 请求模型文本(apiConfig, withNaturalProse(messagesWithRuntimeRequirements), {
             temperature: 0.7,
             signal,
             streamOptions: 带结束回调的流式选项,
@@ -2343,7 +2420,7 @@ export const generateStoryResponse = async (
         合并同角色: false
     });
 
-    const rawText = await 请求模型文本(apiConfig, normalizedApiMessages, {
+    const rawText = await 请求模型文本(apiConfig, withNaturalProse(normalizedApiMessages), {
         temperature: 0.7,
         signal,
         streamOptions: 带结束回调的流式选项,

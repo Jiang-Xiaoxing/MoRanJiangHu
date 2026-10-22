@@ -52,6 +52,12 @@ const 创建开局配置 = (name = '沈青萝') => ({
 } as any);
 
 describe('开局伙伴姓名保护', () => {
+    it('开场基态不会将主角撇号变体作为伙伴，且不会删除正常空格差异', () => {
+        const same = 创建开场基础状态({ 姓名: "O'Connor" } as any, {} as any, 创建开局配置('O’Connor'));
+        expect(same.社交).toEqual([]);
+        const different = 创建开场基础状态({ 姓名: 'Emily Carter' } as any, {} as any, 创建开局配置('EmilyCarter'));
+        expect(different.社交.map(npc => npc.姓名)).toEqual(['EmilyCarter']);
+    });
     it('开场基础状态会直接创建玩家指定姓名的伙伴', () => {
         const openingConfig = 创建开局配置('沈青萝');
         const base = 创建开场基础状态(

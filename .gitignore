@@ -97,6 +97,8 @@ lerna-debug.log*
 /final-mobile-topbar-validation.png
 /.codex-*.log
 /.tmp-*.log
+# e2e 定位用的临时探针脚本归档目录（不入库，见 memory 的 e2e 排障记录）
+/.tmp-probe-archive/
 /*.aab
 /*.webp
 /character-body-bars-day-mode.png

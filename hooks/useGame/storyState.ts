@@ -1,3 +1,4 @@
+import { normalizeNpcNameKey } from '../../utils/npcName';
 import type {
     WorldGenConfig,
     世界数据结构,
@@ -1255,10 +1256,10 @@ const 合并玩家到重要成员 = (
     playerMember: 详细门派结构['重要成员'][number] | null
 ): 详细门派结构['重要成员'] => {
     if (!playerMember) return members;
-    const playerNameKey = playerMember.姓名.trim();
+    const playerNameKey = normalizeNpcNameKey(playerMember.姓名);
     const existingIndex = members.findIndex((item: any) => (
         String(item?.id || '').trim() === playerMember.id
-        || (playerNameKey && String(item?.姓名 || '').trim() === playerNameKey)
+        || (playerNameKey && normalizeNpcNameKey(item?.姓名) === playerNameKey)
     ));
     if (existingIndex >= 0) {
         const next = [...members];
@@ -1268,8 +1269,112 @@ const 合并玩家到重要成员 = (
     return [playerMember, ...members];
 };
 
+/**
+ * 建档自由文本里出现组织名时的后缀词表。
+ * 长后缀在前，保证「松风山庄」不会被拆成「松风山」+ 未知后缀。
+ */
+const 建档组织后缀词 = [
+    '骑士团', '佣兵团', '魔法学院', '社区中心', '合作团队', '项目组', '事务所', '避难所',
+    '山庄', '剑派', '剑宗', '仙宗', '道院', '宗门', '门派', '帮会', '商会', '公会',
+    '营地', '车队', '小队', '公司', '门店',
+    '派', '门', '宗', '帮', '教', '盟', '会', '阁', '楼', '殿', '宫', '观', '寺',
+    '寨', '谷', '岛', '城', '堡', '坞', '堂', '府', '社', '团', '队', '营'
+];
+
+/**
+ * 看起来像组织名、但语义上是泛称/关系/动词的片段，一律不当作组织名。
+ * 这些是自由文本里最容易误命中的词（`拜入门派`、`同门弟子`、`加入帮会`）。
+ */
+const 建档组织名排除词 = new Set([
+    '门派', '宗门', '帮派', '教派', '组织', '家族', '势力', '世家', '江湖', '武林',
+    '师门', '同门', '本门', '各门', '入门', '旁门', '正门', '邪门', '名门', '掌门',
+    '加入', '拜入', '投入', '进入', '初入', '误入', '出身', '来自'
+]);
+
+/**
+ * 从建档自由文本中提取主角已写明的组织名称。
+ *
+ * 新手向导没有门派名称输入框（`所属门派ID` 恒为 'none'），玩家只能在出身背景 /
+ * 天赋 / 称号 / 开局额外要求等自由文本里写明门派。若不提取，`生成开局门派名称`
+ * 会走固定词池随机取名，并把随机组织回写进 `角色.所属门派ID`；建档摘要随后把这个
+ * 随机组织当作「当前所属门派ID」回喂模型 —— 玩家自写的门派就这样被顶掉了
+ * （玩家反馈「第0回合生成宗门比自己写的优先级更高」）。仅靠提示词约束不够，
+ * 必须在创建开局基态时就把归属认出来。
+ *
+ * 判定刻意保守：先按虚词把文本切成词段，只接受「2~4 字词干 + 组织后缀」正好构成
+ * 一个完整词段的情况，并排除泛称/关系/动词词干。任一条不满足就返回空串，
+ * 回退到原有随机生成，因此失败时行为与修复前完全一致，不会引入新的错误组织名。
+ */
+const 从建档文本提取组织名称 = (charData: 角色数据结构, openingConfig?: OpeningConfig): string => {
+    const 片段: string[] = [];
+    const 压入 = (value: unknown) => {
+        if (typeof value === 'string' && value.trim()) 片段.push(value.trim());
+    };
+    const 背景 = (charData as any)?.出身背景;
+    压入(背景?.名称);
+    压入(背景?.描述);
+    压入(背景?.效果);
+    压入((charData as any)?.称号);
+    const 天赋列表 = (charData as any)?.天赋列表;
+    if (Array.isArray(天赋列表)) {
+        for (const item of 天赋列表) {
+            压入((item as any)?.名称);
+            压入((item as any)?.描述);
+            压入((item as any)?.效果);
+        }
+    }
+    压入((openingConfig as any)?.开局额外要求);
+    const 文本 = 片段.join('\n');
+    if (!文本) return '';
+
+    // 用虚词把文本切成「词段」，再只看词段末尾是否正好是「2~4 字词干 + 组织后缀」。
+    // 直接上正则 `([\u4e00-\u9fa5]{2,4})(后缀)` 会因为贪婪从句子中间起匹配
+    // （`你本是青云剑派的弟子` → 命中 `本是青云剑派`），把真正的名字吞掉，
+    // 所以必须先切段、再在段末定位。
+    //
+    // ⚠️ 分隔符只放「纯虚词」：早期版本把 `一/每/各/全` 之类量词也当分隔符，
+    // 结果把合法名字拆碎（`太一剑派` → `太` + `剑派`），反而漏掉玩家写的门派。
+    // `一个没落的门派` 靠 `个`、`的` 已经足够切断，不需要 `一`。
+    // 归属动词也要作为分隔符：`后来才拜入玄墨帮` 里组织名直接黏在动词之后，
+    // 没有虚词可切，不切就会连同动词一起超出词干长度上限而被漏掉。
+    const 虚词分割 = /(?:的|个|这|那|某|该|此|本|是|在|于|与|和|及|或|家|加入|拜入|投入|投奔|隶属|出身|来自|进入)/;
+    const 词段列表 = 文本
+        .split(/[^\u4e00-\u9fa5]+/)
+        .flatMap((连字段) => 连字段.split(虚词分割))
+        .map((段) => 段.trim())
+        .filter((段) => 段.length >= 3);
+    const 词干泛称 = /武林|江湖|天下|世间|江山|所有|任何|其他|各种|什么/;
+    // 前置否定/已脱离关系：`你不是青云剑派的人`、`早已脱离玄墨帮` 里的组织名
+    // 不能当作主角归属，否则等于凭空塞一个错误门派。
+    const 前置否定 = /(?:不是|并非|没有|未曾|不曾|未入|不入|非|不属于|不属|无缘|脱离|离开|背叛|逐出|除名|失去)$/;
+    const 存在肯定出现 = (词段: string): boolean => {
+        let 起点 = 文本.indexOf(词段);
+        while (起点 >= 0) {
+            const 前文 = 文本.slice(Math.max(0, 起点 - 4), 起点);
+            if (!前置否定.test(前文)) return true;
+            起点 = 文本.indexOf(词段, 起点 + 1);
+        }
+        return false;
+    };
+    for (const 词段 of 词段列表) {
+        for (const 后缀 of 建档组织后缀词) {
+            if (!词段.endsWith(后缀)) continue;
+            const 词干 = 词段.slice(0, 词段.length - 后缀.length);
+            if (词干.length < 2 || 词干.length > 4) continue;
+            if (词干泛称.test(词干)) continue;
+            if (建档组织名排除词.has(词干) || 建档组织名排除词.has(词段)) continue;
+            if (!存在肯定出现(词段)) continue;
+            return 词段;
+        }
+    }
+    return '';
+};
+
 const 生成开局门派名称 = (charData: 角色数据结构, openingConfig?: OpeningConfig): string => {
     if (!是否无门派标识(charData?.所属门派ID)) return 取文本(charData.所属门派ID);
+    // 玩家在建档里写明门派时，用玩家写的名字，别让词池随机名把它顶掉。
+    const 建档组织名 = 从建档文本提取组织名称(charData, openingConfig);
+    if (建档组织名) return 建档组织名;
     const seed = 生成稳定哈希([
         取文本(charData?.姓名),
         取文本((charData as any)?.出身背景?.名称),
@@ -1334,7 +1439,7 @@ const 创建默认同门名录 = (sectName: string, openingConfig?: OpeningConfi
     const seed = 生成稳定哈希(`${sectName}|${openingConfig?.题材模式 || ''}|同门`);
     const surnames = ['沈', '顾', '林', '陆', '许', '程', '韩', '苏', '叶', '周', '秦', '赵'];
     const givenNames = ['照临', '清砚', '明棠', '砚舟', '若衡', '怀瑾', '听澜', '云笙', '承岳', '知微', '景行', '映雪'];
-    const playerKey = typeof playerName === 'string' ? playerName.trim().replace(/\s+/g, '').toLowerCase() : '';
+    const playerKey = normalizeNpcNameKey(playerName);
     const isApocalypse = 是末日题材(openingConfig);
     const isInfinite = 是无限流题材(openingConfig);
     const isModern = 是现代组织题材(openingConfig);
@@ -1354,7 +1459,7 @@ const 创建默认同门名录 = (sectName: string, openingConfig?: OpeningConfi
         const name = `${按种子取项(surnames, seed, index * 3)}${按种子取项(givenNames, seed, index * 5 + 1)}`;
         // 兜底1：随机生成的同门若与主角同名，直接跳过，避免主角被当作 NPC 进入社交/门派成员。
         // 兜底2：命中男性/中性模板姓名黑名单（如"林砚舟"）也跳过，避免开局同门反复撞同一批模板名。
-        if (playerKey && name.trim().replace(/\s+/g, '').toLowerCase() === playerKey) return null;
+        if (playerKey && normalizeNpcNameKey(name) === playerKey) return null;
         if (候选名命中模板黑名单(name)) return null;
         const identity = 按种子取项(roles, seed, index * 7 + 2);
         const duty = isApocalypse

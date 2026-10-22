@@ -1,6 +1,7 @@
+import { isMultilingualNpcName, hasNpcNamePollution } from './npcName';
 import type { GameLog } from '../types';
 
-import { 是否可信角色发送者, 规范化正文发送者名 } from './dialogueSpeakerGuard';
+import { 是否可信角色发送者, 是否含姓名叙事污染, 规范化正文发送者名 } from './dialogueSpeakerGuard';
 import { 提取并清理Judge区块 } from './judgeBlockExtractor';
 import { 是否判定日志文本 } from './judgmentFormat';
 
@@ -41,16 +42,21 @@ const 合并原始片段 = (left?: string, right?: string): string => {
 };
 
 const 清理说话人 = (value: string, confirmedSpeakers?: Set<string>): string => {
+    if (/[\p{Cc}\p{Cf}<>＝=]/u.test(value)) return '';
     let text = (value || '')
         .replace(/[（(][^）)]{1,16}[）)]/g, '')
-        .replace(/[【】\[\]「」『』””'']/g, '')
+        .replace(/[【】\[\]「」『』””]/g, '')
         .trim();
     const special = 规范化正文发送者名(text);
     if (special === '奖励') return special;
+    if (special === '你' || special === '我') return special;
+    if (是否含姓名叙事污染(text)) return '';
 
     // [修复] 如果原始 sender 已在确认名单中，直接通过，避免二次验证误杀
     const normalizedOriginal = 规范化正文发送者名(text);
-    if (confirmedSpeakers?.has(normalizedOriginal)) return normalizedOriginal;
+    if (!hasNpcNamePollution(value) && confirmedSpeakers?.has(normalizedOriginal)
+        && 是否可信角色发送者(normalizedOriginal, { declaredNames: confirmedSpeakers })) return normalizedOriginal;
+    if (isMultilingualNpcName(text)) return 是否可信角色发送者(text) ? text : '';
 
     text = text.split(/[，,、；;。！？!?\s]/).filter(Boolean).pop() || text;
     for (let i = 0; i < 3; i += 1) {
@@ -155,9 +161,9 @@ const 是否Judge残留文本 = (text: string): boolean => {
 
 const 人物动作动词正则 = /^(?:将|把|给|向|对|朝|走|站|坐|停|回|转|看|望|抬|低|点|摇|皱|叹|笑|冷笑|苦笑|轻笑|沉|伸|握|按|收|拔|举|放|推|扶|拂|敛|挑|倒|取|递|开口|提醒|解释|说道|说|道|问|答)/;
 const 无标签言语引导正则 = /^(.{1,32}?)(?:说|说道|道|问|问道|喊|喊道|喝|喝道|答|答道|回|回道|唤|唤道|骂|骂道|笑|笑道|叹|叹道|吩咐|提醒|解释|应|应道|接|接道|开口|继续|补充|又道)\s*[：:，,]\s*(.{2,500})$/;
-const 方括号说话人行正则 = /^【\s*([A-Za-z0-9_\u4e00-\u9fff·]{1,16})\s*】\s*(.{1,800})$/;
-const 方括号说话人片段正则 = /【\s*([A-Za-z0-9_\u4e00-\u9fff·]{1,16})\s*】\s*/g;
-const 裸冒号说话人行正则 = /^([A-Za-z][A-Za-z0-9_· -]{1,23}|[\u4e00-\u9fff]{2,4})(?:[（(][^）)\n]{1,16}[）)])?\s*[:：]\s*(.{1,800})$/u;
+const 方括号说话人行正则 = /^【\s*([\p{L}\p{M}0-9_· ’'\-]{1,64})\s*】\s*(.{1,800})$/u;
+const 方括号说话人片段正则 = /【\s*([\p{L}\p{M}0-9_· ’'\-]{1,64})\s*】\s*/gu;
+const 裸冒号说话人行正则 = /^([\p{L}][\p{L}\p{M}· ’'\-]{1,63}|[\u4e00-\u9fff]{2,4})(?:[（(][^）)\n]{1,16}[）)])?\s*[:：]\s*(.{1,800})$/u;
 const 裸冒号非对白标签集合 = new Set([
     '地点', '时间', '天气', '任务', '命令', '短期记忆', '中期记忆', '长期记忆', '即时记忆',
     '剧情规划', '变量规划', '正文', '行动选项', '动态世界', '触发对象', '对象', '判定值',
@@ -239,7 +245,7 @@ const 是否可抽取方括号对白 = (speakerName: string, body: string): { sp
 
 const 拆分旁白中的显式方括号对白 = (log: GameLog): GameLog[] => {
     const source = typeof log?.text === 'string' ? log.text.replace(/\r\n/g, '\n') : '';
-    if (!source || !/【\s*[A-Za-z0-9_\u4e00-\u9fff·]{1,16}\s*】/.test(source)) return [log];
+    if (!source || !/【\s*[\p{L}\p{M}0-9_· ’'\-]{1,64}\s*】/u.test(source)) return [log];
     const rawSource = 读取日志原始片段(log);
 
     const result: GameLog[] = [];
@@ -251,7 +257,7 @@ const 拆分旁白中的显式方括号对白 = (log: GameLog): GameLog[] => {
     while ((match = 方括号说话人片段正则.exec(source)) !== null) {
         const speakerName = (match[1] || '').trim();
         const bodyStart = 方括号说话人片段正则.lastIndex;
-        const nextMatch = source.slice(bodyStart).match(/【\s*[A-Za-z0-9_\u4e00-\u9fff·]{1,16}\s*】\s*/);
+        const nextMatch = source.slice(bodyStart).match(/【\s*[\p{L}\p{M}0-9_· ’'\-]{1,64}\s*】\s*/u);
         const bodyEnd = nextMatch?.index !== undefined && nextMatch.index >= 0
             ? bodyStart + nextMatch.index
             : source.length;

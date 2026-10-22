@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { __测试__清除已触发上下文截断警告, 应用Claude兼容末尾User修正, 应用Gemini尾部Model回合修正, 是否Gemini系模型, 请求模型文本, 是否流式连接中断错误消息, 规范化流式连接错误提示, 规范化请求模型名称, type 通用消息 } from '../services/ai/chatCompletionClient';
+import { __测试__清除已触发上下文截断警告, 应用Claude兼容末尾User修正, 应用Gemini尾部Model回合修正, 是否Gemini系模型, 请求模型文本, 是否流式连接中断错误消息, 规范化流式连接错误提示, 规范化请求模型名称, 翻译鉴权与地址错误提示, type 通用消息 } from '../services/ai/chatCompletionClient';
 import type { 当前可用接口结构 } from '../utils/apiConfig';
 
 const baseConfig: 当前可用接口结构 = {
@@ -11,6 +11,23 @@ const baseConfig: 当前可用接口结构 = {
     apiKey: 'test-key',
     model: 'test-model'
 };
+
+describe('翻译鉴权与地址错误提示', () => {
+    it('401/403/404 翻译成可执行的排查建议并保留原始信息', () => {
+        const e401 = 翻译鉴权与地址错误提示(401, '{"error":{"message":"invalid api key"}}');
+        expect(e401).toContain('401');
+        expect(e401).toContain('API Key');
+        expect(e401).toContain('原始信息');
+        expect(翻译鉴权与地址错误提示(404, 'model not found')).toContain('Base URL');
+        expect(翻译鉴权与地址错误提示(403, '')).toContain('403');
+    });
+
+    it('其他状态码不接手', () => {
+        expect(翻译鉴权与地址错误提示(400, 'bad request')).toBeNull();
+        expect(翻译鉴权与地址错误提示(500, 'oops')).toBeNull();
+        expect(翻译鉴权与地址错误提示(504, 'gateway')).toBeNull();
+    });
+});
 
 describe('chatCompletionClient Claude compatible message normalization', () => {
     afterEach(() => {
@@ -425,6 +442,60 @@ describe('chatCompletionClient Claude compatible message normalization', () => {
             { role: 'assistant', content: '第一回合正文' },
             { role: 'user', content: '第二回合' }
         ]);
+    });
+
+    it('does not send the non-standard disable_thinking field to official Gemini endpoints', async () => {
+        const fetchMock = vi.spyOn(globalThis, 'fetch')
+            .mockResolvedValueOnce(new Response(JSON.stringify({
+                choices: [{ message: { content: 'gemini-ok' } }]
+            }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' }
+            }));
+
+        const result = await 请求模型文本({
+            ...baseConfig,
+            供应商: 'gemini',
+            baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+            model: 'gemini-4-argon'
+        }, [{ role: 'user', content: 'ping' }], {
+            temperature: 0.7,
+            signal: undefined,
+            streamOptions: { stream: false },
+            errorDetailLimit: 500,
+            disableThinking: true,
+            stripReasoning: true
+        });
+
+        expect(result).toBe('gemini-ok');
+        const requestBody = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body));
+        expect(requestBody.disable_thinking).toBeUndefined();
+    });
+
+    it('still sends disable_thinking for GLM configurations that support the field', async () => {
+        const fetchMock = vi.spyOn(globalThis, 'fetch')
+            .mockResolvedValueOnce(new Response(JSON.stringify({
+                choices: [{ message: { content: 'glm-ok' } }]
+            }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' }
+            }));
+
+        await 请求模型文本({
+            ...baseConfig,
+            供应商: 'zhipu',
+            baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+            model: 'glm-4.6'
+        }, [{ role: 'user', content: 'ping' }], {
+            temperature: 0.7,
+            signal: undefined,
+            streamOptions: { stream: false },
+            errorDetailLimit: 500,
+            disableThinking: true
+        });
+
+        const requestBody = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body));
+        expect(requestBody.disable_thinking).toBe(true);
     });
 
     it('routes Gemini Deep Research models through the Interactions API', async () => {

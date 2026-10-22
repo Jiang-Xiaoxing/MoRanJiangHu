@@ -199,7 +199,8 @@ export const 执行NPC香闺秘档部位生图工作流 = async (
             appearance: baseData?.外貌 ?? npc?.外貌描写 ?? npc?.外貌,
             body: baseData?.身材 ?? npc?.身材描写 ?? npc?.身材,
             clothing: baseData?.衣着 ?? npc?.衣着风格 ?? npc?.衣着,
-            bio: [baseData?.简介, baseData?.核心性格特征, baseData?.性格, baseData?.视觉年龄约束].filter(Boolean).join('；'),
+            // 视觉年龄约束 是上一轮解析产出的指令文本，不作为年龄判断输入（避免回灌误判 elderly）
+            bio: [baseData?.简介, baseData?.核心性格特征, baseData?.性格].filter(Boolean).join('；'),
             race: npc?.种族,
             species: npc?.血统,
             additionalTexts: [npc?.灵根, npc?.灵根资质, npc?.男娘设定, npc?.扶她设定, npc?.性转记录]

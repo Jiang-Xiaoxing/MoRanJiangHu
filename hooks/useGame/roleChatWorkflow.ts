@@ -2,6 +2,7 @@ import type {
     接口设置结构,
     聊天记录结构,
     场外对话消息结构,
+    群聊摘要条目,
     记忆配置结构,
     提示词结构
 } from '../../types';
@@ -11,6 +12,7 @@ import { generateRoleChatReply, 清理角色对话输出 } from '../../services/
 import { 规范化环境信息 } from './stateTransforms';
 import { 环境时间转标准串 } from './timeUtils';
 import { 判断角色对话位置 } from '../../utils/roleChatLocation';
+import { 执行带完整性校验的请求 } from './streamIntegrity';
 
 // 「角色对话」侧聊工作流。
 // 设计原则：注入的是“这一名角色的认知范围”，不是主剧情 AI 的全知视角——
@@ -54,6 +56,36 @@ const 取数值 = (value: unknown): number => (typeof value === 'number' && Numb
 
 type 通用消息结构 = { role: 'system' | 'user' | 'assistant'; content: string };
 
+// 群聊摘要挂在消息上，规范化时不能丢，否则每轮都会重新生成摘要（省下的 token 又还回去）。
+const 规范化群聊摘要条目 = (raw: unknown): 群聊摘要条目[] => {
+    if (!Array.isArray(raw)) return [];
+    return raw
+        .map((item: any): 群聊摘要条目 | null => {
+            const 内容 = 取文本(item?.内容);
+            const 听众键 = 取文本(item?.听众键);
+            if (!内容 || !听众键) return null;
+            const 用量 = item?.用量 && typeof item.用量 === 'object' ? {
+                ...(Number.isFinite(Number(item.用量.promptTokens)) ? { promptTokens: Number(item.用量.promptTokens) } : {}),
+                ...(Number.isFinite(Number(item.用量.completionTokens)) ? { completionTokens: Number(item.用量.completionTokens) } : {}),
+                ...(Number.isFinite(Number(item.用量.totalTokens)) ? { totalTokens: Number(item.用量.totalTokens) } : {}),
+                ...(Number.isFinite(Number(item.用量.credit)) ? { credit: Number(item.用量.credit) } : {})
+            } : undefined;
+            return {
+                ...(取文本(item?.群聊ID) ? { 群聊ID: 取文本(item.群聊ID) } : {}),
+                听众键,
+                覆盖到时间: Number.isFinite(Number(item?.覆盖到时间)) ? Number(item.覆盖到时间) : 0,
+                内容,
+                生成时间: Number.isFinite(Number(item?.生成时间)) ? Number(item.生成时间) : 0,
+                ...(Array.isArray(item?.事实) ? { 事实: item.事实.map(取文本).filter(Boolean) } : {}),
+                ...(Array.isArray(item?.早期事实) ? { 早期事实: item.早期事实.map(取文本).filter(Boolean) } : {}),
+                ...(取文本(item?.概述) ? { 概述: 取文本(item.概述) } : {}),
+                ...(item?.补充课 === true ? { 补充课: true } : {}),
+                ...(用量 && Object.keys(用量).length > 0 ? { 用量 } : {})
+            };
+        })
+        .filter((item): item is 群聊摘要条目 => item !== null);
+};
+
 export const 规范化场外对话列表 = (raw: unknown): 场外对话消息结构[] => {
     if (!Array.isArray(raw)) return [];
     return raw
@@ -67,6 +99,7 @@ export const 规范化场外对话列表 = (raw: unknown): 场外对话消息结
             const 听众NPCIds = Array.isArray(item?.听众NPCIds) ? item.听众NPCIds.map(取文本).filter(Boolean) : [];
             const 听众 = Array.isArray(item?.听众) ? item.听众.map(取文本).filter(Boolean) : [];
             const 完成状态 = item?.完成状态 === 'partial' ? 'partial' : item?.完成状态 === 'complete' ? 'complete' : undefined;
+            const 群聊摘要 = 规范化群聊摘要条目(item?.群聊摘要);
             return {
                 ...(npcId ? { npcId } : {}),
                 ...(会话类型 ? { 会话类型 } : {}),
@@ -74,6 +107,7 @@ export const 规范化场外对话列表 = (raw: unknown): 场外对话消息结
                 ...(听众NPCIds.length > 0 ? { 听众NPCIds: Array.from(new Set(听众NPCIds)) } : {}),
                 ...(听众.length > 0 ? { 听众: Array.from(new Set(听众)) } : {}),
                 ...(完成状态 ? { 完成状态 } : {}),
+                ...(群聊摘要.length > 0 ? { 群聊摘要 } : {}),
                 role,
                 发言人: 取文本(item?.发言人) || (role === 'npc' ? 'NPC' : '玩家'),
                 内容,
@@ -86,6 +120,50 @@ export const 规范化场外对话列表 = (raw: unknown): 场外对话消息结
 
 // 目标 NPC 的稳定标识：优先 id，缺 id 时退回姓名（与 解析目标NPC 的查找口径一致）。
 const 取目标NPC标识 = (npc: any): string => 取文本(npc?.id) || 取文本(npc?.姓名);
+
+export type 角色对话重Roll目标 = {
+    玩家输入: string;
+    剩余暂存: 场外对话消息结构[];
+};
+
+/**
+ * 计算「重ROLL 上一次角色回复」需要重发的输入。
+ *
+ * 角色对话的入库形态是成对的 `[玩家, NPC]`，而 `执行角色对话` 在回放暂存历史之后
+ * 还会把 `玩家输入` 再追加成最后一条 user 消息。所以要重新生成上一次的回复，
+ * 必须把那一对从暂存里摘掉、再拿玩家原话当 `玩家输入` 重发；
+ * 否则同一句话会在上下文里出现两次，模型会以为玩家说了两遍。
+ *
+ * 只在「最后一条是本角色的 NPC 回复、且其前一条是同角色的玩家发言」时才允许，
+ * 其余情况一律返回 null 让调用方禁用入口 —— 避免误删别的角色的对话或群聊记录。
+ */
+export const 计算角色对话重Roll目标 = (
+    场外对话: 场外对话消息结构[] | undefined | null,
+    params: { npcId?: string; npcName?: string }
+): 角色对话重Roll目标 | null => {
+    const 目标标识 = 取文本(params.npcId) || 取文本(params.npcName);
+    if (!目标标识) return null;
+    const 原列表 = Array.isArray(场外对话) ? 场外对话 : [];
+    // 用原始下标定位：规范化场外对话列表 会重建对象并丢弃空内容项，
+    // 拿重建后的对象回删会删错，所以这里只借它的过滤口径、保留下标。
+    const 本人下标: number[] = [];
+    原列表.forEach((item: any, index: number) => {
+        if (item?.会话类型 === 'group') return;
+        if (取文本(item?.npcId) !== 目标标识) return;
+        if (!取文本(item?.内容)) return;
+        本人下标.push(index);
+    });
+    if (本人下标.length < 2) return null;
+    const 末下标 = 本人下标[本人下标.length - 1];
+    const 前下标 = 本人下标[本人下标.length - 2];
+    if (原列表[末下标]?.role !== 'npc') return null;
+    if (原列表[前下标]?.role !== 'player') return null;
+    const 玩家输入 = 取文本(原列表[前下标]?.内容);
+    if (!玩家输入) return null;
+    const 剩余暂存 = 原列表.filter((_, index) => index !== 末下标 && index !== 前下标);
+    return { 玩家输入, 剩余暂存 };
+};
+
 
 // —— 主回合注入块：把暂存的场外对话原文 + 处理指令打包给主剧情 AI ——
 export const 构建场外对话记录块 = (
@@ -385,7 +463,11 @@ const 创建超时错误 = (message: string): Error => {
 // 注意：settle 必须真正结算外层 Promise（resolve/reject），否则超时/取消后外层仍要等
 // task 自己因 abort 抛错，部分回复会被丢掉、甚至一直挂着。
 export const 执行角色对话请求带超时 = (
-    task: (signal: AbortSignal, onDelta: (delta: string, accumulated: string) => void) => Promise<string>,
+    task: (
+        signal: AbortSignal,
+        onDelta: (delta: string, accumulated: string) => void,
+        进入非流式重试: () => void
+    ) => Promise<string>,
     parentSignal?: AbortSignal,
     options?: { 中断时保留部分?: boolean }
 ): Promise<string> => {
@@ -395,6 +477,9 @@ export const 执行角色对话请求带超时 = (
         let accumulated = '';
         let receivedResponse = false;
         let settled = false;
+        // 已进入降级非流式重试：此时的 accumulated 是**上一次被掐断的截断文本**，
+        // 不能再当成功回复返回，超时必须显式失败。
+        let 重试进行中 = false;
 
         const clearTimer = () => {
             if (timer !== null) {
@@ -412,21 +497,37 @@ export const 执行角色对话请求带超时 = (
         };
         const handleParentAbort = () => {
             const reason = parentSignal?.reason ?? new DOMException('请求已取消', 'AbortError');
-            if (options?.中断时保留部分 === true && accumulated.trim().length > 0) finish('resolve', accumulated);
+            if (options?.中断时保留部分 === true && !重试进行中 && accumulated.trim().length > 0) finish('resolve', accumulated);
             else finish('reject', reason);
             controller.abort(reason);
         };
         const handleTimeout = () => {
-            if (accumulated.trim().length > 0) {
+            // 重试阶段超时时，accumulated 是上一次被掐断的半截文本，返回它等于把
+            // 截断内容当成完整回复交给玩家。必须显式失败。
+            if (!重试进行中 && accumulated.trim().length > 0) {
                 finish('resolve', accumulated);
             } else {
-                finish('reject', 创建超时错误(receivedResponse ? '角色对话流式输出空闲超时' : '角色对话等待首次响应超时'));
+                finish('reject', 创建超时错误(
+                    重试进行中
+                        ? '角色对话降级非流式重试超时'
+                        : (receivedResponse ? '角色对话流式输出空闲超时' : '角色对话等待首次响应超时')
+                ));
             }
             controller.abort(new DOMException('角色对话请求超时', 'AbortError'));
         };
         const resetTimer = (timeoutMs: number) => {
             clearTimer();
             timer = setTimeout(handleTimeout, timeoutMs);
+        };
+        /**
+         * 降级非流式重试前调用：计时器切回「等待首次响应」预算，并标记重试阶段。
+         * 非流式重试不产生任何增量，若沿用流式空闲预算（90 秒且已被消耗）几乎必然超时。
+         */
+        const 进入非流式重试 = () => {
+            重试进行中 = true;
+            accumulated = '';
+            receivedResponse = false;
+            resetTimer(首次响应超时毫秒);
         };
 
         if (parentSignal) {
@@ -443,7 +544,7 @@ export const 执行角色对话请求带超时 = (
             receivedResponse = true;
             accumulated = currentAccumulated;
             resetTimer(流式空闲超时毫秒);
-        }).then(
+        }, 进入非流式重试).then(
             (result) => finish('resolve', result),
             (error) => finish('reject', error)
         );
@@ -469,17 +570,38 @@ export const 执行角色对话 = async (deps: 角色对话依赖, params: 角�
     }
 
     const messages = 构建角色对话消息序列(deps, params);
+    /**
+     * 空闲超时只能挡住「长时间没有新数据」，挡不住「快速断流」——
+     * 中转站在收到一部分 token 后直接关掉连接时，超时计时器根本不会触发，
+     * 半句台词会被当成完整回复返回（2026-10-07 记忆总结截断的同一根因）。
+     * 这里在超时包装之内再叠一层结束标记校验，疑似被掐断就降级非流式重试一次。
+     */
     const reply = await 执行角色对话请求带超时(
-        (signal, onDelta) => generateRoleChatReply(messages, roleChatApi as any, {
-            signal,
-            streamOptions: {
-                stream: true,
-                onDelta: (delta, accumulated) => {
-                    onDelta(delta, accumulated);
-                    params.onDelta?.(delta, accumulated);
+        async (signal, onDelta, 进入非流式重试) => {
+            const 完整性结果 = await 执行带完整性校验的请求({
+                功能名: '角色对话',
+                发起流式请求: (streamOptions) => generateRoleChatReply(messages, roleChatApi as any, {
+                    signal,
+                    streamOptions: {
+                        stream: true,
+                        onDelta: (delta, accumulated) => {
+                            onDelta(delta, accumulated);
+                            params.onDelta?.(delta, accumulated);
+                        },
+                        onStreamEnd: streamOptions.onStreamEnd
+                    }
+                }),
+                发起非流式请求: () => generateRoleChatReply(messages, roleChatApi as any, { signal }),
+                // 重试前把外层超时器切回首响应预算，否则非流式重试会被流式空闲计时器掐断。
+                重试前重置超时: 进入非流式重试,
+                // 重试也失败时不能把上一次的截断文本当完整回复返回。
+                重试失败处置: '抛出错误',
+                onFallback: (info) => {
+                    console.warn('[角色对话] 流式输出疑似被上游中断，降级为非流式重新生成', info);
                 }
-            }
-        }),
+            });
+            return 完整性结果.结果;
+        },
         params.signal,
         { 中断时保留部分: true }
     );

@@ -1,13 +1,11 @@
+import { normalizeNpcNameKey, 是代称式NPC称呼 } from './npcName';
 import type { TavernCommand } from '../types';
 import { normalizeStateCommandKey } from './stateHelpers';
 
 const 深拷贝 = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 
-const 规范化NPC键 = (value: unknown): string => (
-    typeof value === 'string'
-        ? value.trim().replace(/[\s\u3000]+/g, '').toLowerCase()
-        : ''
-);
+const 规范化NPC键 = normalizeNpcNameKey;
+const 读取NPC显示姓名 = (npc: any): unknown => npc?.姓名 || npc?.名称 || npc?.name;
 
 const 读取NPC键列表 = (npc: any): string[] => {
     if (!npc || typeof npc !== 'object' || Array.isArray(npc)) return [];
@@ -42,8 +40,59 @@ export const 是否占位名 = (value: unknown): boolean => {
     if (typeof value !== 'string' || !value.trim()) return true;
     const trimmed = value.trim();
     return /^(角色|未命名功法|未命名武功|势力\s*)\d+$/u.test(trimmed)
+        || /^新NPC\d*$/u.test(trimmed)
         || /^npc_\d+$/i.test(trimmed)
         || /^FCT-\d+$/i.test(trimmed);
+};
+
+// 姓名保护的身份查找：整数组不能按索引对应；稳定 ID 优先，缺 ID 时才用精确姓名/曾用名。
+export const 查找姓名保护对应NPC = (candidate: any, currentSocial: any[]): any | undefined => {
+    const id = 规范化NPC键(candidate?.id || candidate?.ID);
+    const list = Array.isArray(currentSocial) ? currentSocial : [];
+    if (id) {
+        const byId = list.find(npc => 规范化NPC键(npc?.id || npc?.ID) === id);
+        if (byId) return byId;
+    }
+    const name = 规范化NPC键(读取NPC显示姓名(candidate));
+    if (!name) return undefined;
+    return list.find(npc => {
+        const existingId = 规范化NPC键(npc?.id || npc?.ID);
+        if (id && existingId && id !== existingId) return false;
+        return [读取NPC显示姓名(npc), ...(Array.isArray(npc?.曾用名) ? npc.曾用名 : [])]
+            .some(value => 规范化NPC键(value) === name);
+    });
+};
+
+export const 检测NPC姓名改写风险命令 = (commands: any[], currentSocial: any[]): string[] => {
+    const issues: string[] = [];
+    const compare = (previous: any, nextName: unknown, label: string) => {
+        const currentKey = 规范化NPC键(previous?.姓名);
+        const nextKey = 规范化NPC键(nextName);
+        if (!currentKey || !nextKey || currentKey === nextKey) return;
+        // 改名只允许「临时称呼 → 真名」：占位名（角色9）与代称式称呼（青衣女子）可以被真名替换；
+        // 真名互改、真名改成临时称呼、代称之间互改都必须拦截。
+        // 整项写入 `set 社交[i] = {...}` 也走这里，所以目标名同样要校验。
+        const 当前是临时称呼 = 是否占位名(previous?.姓名) || 是代称式NPC称呼(previous?.姓名);
+        const 目标是真名 = !是否占位名(nextName) && !是代称式NPC称呼(nextName);
+        if (!(当前是临时称呼 && 目标是真名)) {
+            issues.push(`${label}.姓名：${previous.姓名} -> ${String(nextName)}`);
+        }
+    };
+    (Array.isArray(commands) ? commands : []).forEach(cmd => {
+        if ((cmd?.action || 'set') !== 'set') return;
+        const key = normalizeStateCommandKey(typeof cmd?.key === 'string' ? cmd.key : '');
+        if (key === 'gameState.社交' && Array.isArray(cmd.value)) {
+            cmd.value.forEach(npc => compare(查找姓名保护对应NPC(npc, currentSocial), 读取NPC显示姓名(npc), `社交[${npc?.id || npc?.ID || npc?.姓名}]`));
+            return;
+        }
+        const match = key.match(/^gameState\.社交\[(\d+)\](\.姓名)?$/);
+        if (!match) return;
+        const index = Number(match[1]);
+        const previous = match[2] ? currentSocial?.[index]
+            : (查找姓名保护对应NPC(cmd.value, currentSocial) || currentSocial?.[index]);
+        compare(previous, match[2] ? cmd.value : 读取NPC显示姓名(cmd.value), `社交[${index}]`);
+    });
+    return issues;
 };
 
 /** 需要在深合并中做空值保护的关键字段（名称类字段） */
@@ -55,6 +104,7 @@ const 深合并保留NPC字段 = (previous: any, next: any): any => {
     const result = 是普通对象(previous) ? 深拷贝(previous) : {};
     Object.entries(next).forEach(([key, value]) => {
         if (value === undefined) return;
+        if (key === '姓名' && 规范化NPC键(result[key]) && 规范化NPC键(result[key]) === 规范化NPC键(value)) return;
         // 名称字段空值保护：当新值为空或占位名，且旧值有真实名称时，保留旧值
         if (名称保护字段.has(key) && 实质为空文本(value) && !实质为空文本(result[key]) && !是否占位名(result[key])) {
             return; // 保留旧的真实名称，不覆盖

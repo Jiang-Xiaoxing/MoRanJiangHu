@@ -75,7 +75,8 @@ export const 创建主角图片工作流 = (deps: 主角图片工作流依赖) =
             identity: playerSnapshot?.称号 || playerSnapshot?.出身背景?.名称 || baseData?.身份,
             appearance: playerSnapshot?.外貌 || baseData?.外貌,
             clothing: baseData?.衣着,
-            bio: [playerSnapshot?.性格, playerSnapshot?.出身背景?.描述, baseData?.视觉年龄约束].filter(Boolean).join('；'),
+            // 视觉年龄约束 是上一轮解析产出的指令文本，不作为年龄判断输入（避免回灌误判 elderly）
+            bio: [playerSnapshot?.性格, playerSnapshot?.出身背景?.描述].filter(Boolean).join('；'),
             race: (playerSnapshot as any)?.种族,
             species: (playerSnapshot as any)?.血统,
             additionalTexts: [playerSnapshot?.灵根, playerSnapshot?.灵根资质, playerSnapshot?.性转记录]

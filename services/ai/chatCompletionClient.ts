@@ -5,6 +5,7 @@ import { OpenAI兼容地址已包含版本路径, 去除OpenAI兼容聊天端点
 import { 小米MiMo稳定输出预设 } from '../../prompts/providers/xiaomiMiMoStablePreset';
 import { GLM稳定输出预设 } from '../../prompts/providers/glmStablePreset';
 import { fetchWithCorsRelay, 疑似浏览器跨域失败, 中转可用, 构建AI中转地址, 翻译跨域中转拒绝 } from './corsRelay';
+import { supportsVariableReviewTopP } from '../../utils/variableReviewSampling';
 
 export type 通用消息角色 = 'system' | 'user' | 'assistant';
 
@@ -32,6 +33,7 @@ export type 通用流式选项 = {
 } | undefined;
 
 export type 模型请求附加选项 = {
+    variableReviewSampling?: boolean;
     includeReasoning?: boolean;
     disableThinking?: boolean;
     stripReasoning?: boolean;
@@ -76,6 +78,13 @@ export class 协议请求错误 extends Error {
      * 因此不允许改走同域中转重试（见 可以安全改走中转）。
      */
     已接收字节?: number;
+    /**
+     * 显式标记「重发无意义」：上游安全策略拦截（finish_reason=SAFETY 等）与
+     * 输出上限为零正文（finish_reason=length）时，同样内容的请求必然得到同样
+     * 结果。内层 带重试执行 与外层 是否可自动重试错误 都会识别该标记并跳过
+     * 重试，避免重复消耗输入 Token（此类请求上游照常计费）。
+     */
+    不可重试?: boolean;
 
     constructor(message: string, status?: number, detail?: string) {
         super(message);
@@ -104,6 +113,25 @@ export const 翻译网关超时提示 = (status: number, detail?: string): strin
     return `${前缀}${建议}${原始 ? `（原始信息：${原始}）` : ''}`;
 };
 
+/**
+ * 401 / 403 / 404 多为渠道配置问题而非游戏故障：Key 无效、地址拼错或模型不存在。
+ * 原样抛出 `API Error: 401 - {"error":...}` 对玩家没有可操作性，这里翻译成排查建议，
+ * 并保留原始信息片段便于排障（与 翻译网关超时提示 同一模式）。
+ */
+export const 翻译鉴权与地址错误提示 = (status: number, detail?: string): string | null => {
+    if (status !== 401 && status !== 403 && status !== 404) return null;
+    const 前缀 = status === 401
+        ? 'AI 接口鉴权失败（401）：服务商拒绝了这把 API Key。'
+        : status === 403
+            ? 'AI 接口拒绝访问（403）：这把 Key 无权使用该接口，或来源 IP/地区被限制。'
+            : 'AI 接口返回 404：接口地址或模型不存在。';
+    const 建议 = status === 404
+        ? '请检查 Base URL 是否拼错（例如缺 /v1 后缀）、模型名在该服务商处是否确实存在；部分渠道过载或限流时也会短暂返回 404，可稍后重试。'
+        : '请到接口设置核对 API Key 是否正确、是否过期，账户是否有余额或权限；更换 Key 或渠道后再试。';
+    const 原始 = (detail || '').trim().replace(/\s+/g, ' ').slice(0, 120);
+    return `${前缀}${建议}${原始 ? `（原始信息：${原始}）` : ''}`;
+};
+
 const 响应详情疑似不支持流式 = (text: string): boolean => {
     const raw = (text || '').toLowerCase();
     if (raw.includes('event-stream')) return true;
@@ -114,10 +142,11 @@ const 响应详情疑似不支持流式 = (text: string): boolean => {
 
 export const 规范化文本补全消息链 = (
     messages: 通用消息[],
-    options?: { 保留System?: boolean; 合并同角色?: boolean }
+    options?: { 保留System?: boolean; 合并同角色?: boolean; 尾部System转User?: boolean }
 ): 通用消息[] => {
     const keepSystem = options?.保留System !== false;
     const mergeSameRole = options?.合并同角色 !== false;
+    const tailSystemToUser = options?.尾部System转User === true;
     const normalized: 通用消息[] = messages
         .map((msg) => {
             const isPrefix = msg.prefix === true;
@@ -132,6 +161,16 @@ export const 规范化文本补全消息链 = (
             };
         })
         .filter(msg => msg.content.length > 0);
+
+    // [修复] 请求以 system 消息结尾时，部分上游（Gemini 桥接、部分中转）会返回
+    // HTTP 200 空内容；酒馆 instruct 序列错标、post_history 注入都可能造成尾部 system。
+    // 把尾部 system 降为 user（prefix 消息除外——它是生成引导，不是待回复输入）。
+    if (tailSystemToUser) {
+        const tail = normalized[normalized.length - 1];
+        if (tail && tail.role === 'system' && tail.prefix !== true) {
+            tail.role = 'user';
+        }
+    }
 
     if (!mergeSameRole) return normalized;
 
@@ -266,6 +305,14 @@ export const 是否GLM接口配置 = (apiConfig: 当前可用接口结构): bool
     if (model.includes('glm')) return true;
     return false;
 };
+
+// [修复] disable_thinking 是部分 OpenAI 兼容中转为 GLM/DeepSeek 系模型提供的非标准扩展字段，
+// 只对原本就设计了"思考开关"（DeepSeek策略/GLM策略）的配置发送。
+// 官方 Gemini 的 OpenAI 兼容端点（generativelanguage.googleapis.com/v1beta/openai）会做严格
+// proto 校验，未知字段直接 400：Unknown name "disable_thinking": Cannot find field.，
+// 导致自带官方 key 的 Gemini 玩家从开局主剧情起全部请求失败（酒馆等客户端不发该字段所以正常）。
+const 支持禁用思考参数 = (apiConfig: 当前可用接口结构): boolean =>
+    是否GLM接口配置(apiConfig) || 是否DeepSeek模型配置(apiConfig);
 
 const 解析请求协议类型 = (apiConfig: 当前可用接口结构): 请求协议类型 => {
     if (是否DeepSeek原生接口配置(apiConfig)) return 'deepseek';
@@ -771,6 +818,31 @@ export const 规范化流式连接错误提示 = (message: string): string => {
 };
 
 /**
+ * 原生桥（androidBridge.postMessage）调用失败：请求尚未发往模型服务。
+ *
+ * 典型形态 `Error invoking postMessage: Java bridge method invocation error`，
+ * 堆栈落在 postToNative → cap.toNative → cap.nativeCallback。这是 Android WebView
+ * 在 JS→Java 注入桥调用失败时抛的，几乎都是单次下发的请求体超过桥上限
+ * （规划分析的全量状态 JSON 载荷实测可越过；上限随 WebView 版本而变）。
+ *
+ * 因请求零字节发出（无计费风险），允许安全降级：非流式路径走请求拦截而非桥。
+ */
+export const 是否原生桥载荷错误 = (error: unknown): boolean => {
+    // ⚠️ 必须同时看 detail：桥错误经 `解析SSE文本原生` 规范化后，
+    // message 已被替换成玩家可读提示，原始 `Error invoking postMessage ...`
+    // 只留在 `协议请求错误.detail` 里。只看 message 会让降级判断恒为 false，
+    // 降级分支变成死代码（CodeRabbit PR #110 抓到的真 bug）。
+    const 片段: string[] = [读取错误消息(error)];
+    if (error instanceof 协议请求错误 && typeof error.detail === 'string') {
+        片段.push(error.detail);
+    }
+    const message = 片段.join(' ').toLowerCase();
+    if (!message) return false;
+    return message.includes('postmessage')
+        && (message.includes('java bridge') || message.includes('bridge method'));
+};
+
+/**
  * 原生（APK）流式请求的底层连接报错 → 玩家可读提示。
  * 原生插件直接走 HttpURLConnection，报错形如 "Failed to connect to /192.168.1.5:11434"，
  * 原样弹给玩家看不出该怎么处理。
@@ -779,6 +851,11 @@ export const 规范化原生连接错误提示 = (message: string): string => {
     const raw = (message || '').trim();
     if (!raw) return raw;
     const lower = raw.toLowerCase();
+    if (是否原生桥载荷错误(raw)) {
+        return '安卓端本地桥接层无法处理本次请求的体积（当前游戏状态或世界书/小说分解注入内容过大），请求尚未发出。'
+            + '请尝试：关闭女主规划、减少世界书或小说分解的注入内容、回到较早存档；'
+            + '若持续失败，请把这条提示反馈给作者。';
+    }
     const 连接层失败 = lower.includes('failed to connect')
         || lower.includes('connection refused')
         || lower.includes('unable to resolve host')
@@ -816,6 +893,10 @@ const 是可重试状态码 = (status: number): boolean => {
 };
 
 const 错误可重试 = (error: unknown): boolean => {
+    // 显式标记不可重试的错误（上游安全拦截/输出上限零正文）：重发必然同样结果
+    if (error && typeof error === 'object' && (error as { 不可重试?: boolean }).不可重试 === true) {
+        return false;
+    }
     const status = 读取错误状态码(error);
     if (typeof status === 'number') {
         return 是可重试状态码(status);
@@ -1029,6 +1110,63 @@ export const 读取失败详情文本 = async (response: Response, maxLen = 600)
     }
 };
 
+/**
+ * 已知的正常停止原因：模型自然生成结束或按工具调用协议收尾，不代表异常。
+ * 兼容 OpenAI 风格（stop/length/tool_calls）与 Gemini 原生风格（STOP/MAX_TOKENS/END_TURN）。
+ */
+const 已知正常结束原因正则 = /^(?:finish_reason_)?(stop|end_turn|eos|tool_calls|function_call|incomplete|complete)$/i;
+/** 输出长度耗尽：正文为空时说明 max_tokens 太小，模型还没产出正文就到顶了。 */
+const 已知长度类结束原因正则 = /^(?:finish_reason_)?(length|max_tokens)$/i;
+/**
+ * 安全策略类结束原因。Gemini 官方文档：命中内容过滤器时 Candidate.content 为空、
+ * finishReason 为 SAFETY/RECITATION/PROHIBITED_CONTENT/BLOCKLIST/SPII 等；
+ * OpenAI 兼容层与部分中转则映射为 content_filter。
+ */
+const 已知安全类结束原因正则 = /^(?:finish_reason_)?(safety|recitation|prohibited_content|blocklist|spii|image_prohibited_content|malformed_function_call|content_filter)$/i;
+
+/**
+ * 把「零正文增量」场景下的 finish_reason 翻译成可操作的错误。
+ *
+ * - 安全类 → 明确告知被上游审核拦截及应对办法（不可重试：重发同样内容照样被拦）
+ * - 长度类 → 提示调大 max_tokens
+ * - 其他未知名（含 Gemini 原生 OTHER、桥接瞬时异常）→ 保留「模型返回了空内容」措辞，
+ *   维持既有可重试语义（见 错误可重试）
+ * - 正常停止原因 → 返回 null，交给上层 校验非空结果 走通用空内容路径
+ */
+export const 构建空正文结束原因错误 = (finishReason: string): Error | null => {
+    const reason = (finishReason || '').trim();
+    if (!reason) return null;
+    if (已知正常结束原因正则.test(reason)) return null;
+
+    if (已知长度类结束原因正则.test(reason)) {
+        const error = new 协议请求错误(
+            `上游输出为空（finish_reason=${reason}）：模型在产出任何正文前就达到了输出上限。请在接口设置中调大「最大输出 Token」后重试。`,
+            200
+        );
+        // 同样的 max_tokens 重发必然同样结果，标记不可重试（见 协议请求错误.不可重试）
+        error.不可重试 = true;
+        return error;
+    }
+
+    if (已知安全类结束原因正则.test(reason)) {
+        const error = new 协议请求错误(
+            `上游安全策略拦截了本次生成（finish_reason=${reason}），未产出任何正文。` +
+            `常见于提示词、世界书或角色卡内容触发上游审核（酒馆预设的越狱/系统提示词更容易命中），重发同样内容通常无效。` +
+            `建议：① 精简或改写预设中可能触发审核的提示词、世界书条目后重试；② 更换模型或渠道；③ 官方 Gemini 接口可在 Google AI Studio 调整安全设置。`,
+            200
+        );
+        // 同样的内容重发必然同样被拦截，标记不可重试，阻止内层带重试执行与外层
+        // 主剧情自动重试重复发送（Codex P2：外层 是否可自动重试错误 默认对所有
+        // 非取消错误返回 true，不识别该标记会重复消耗输入 Token）
+        error.不可重试 = true;
+        return error;
+    }
+
+    return new Error(
+        `模型返回了空内容（HTTP 200 但未收到任何正文增量，finish_reason=${reason}）。常见原因：上游安全策略拦截了本次生成、思考型模型未产出正文，或桥接服务瞬时异常。建议重试或更换渠道/模型。`
+    );
+};
+
 const 创建SSE文本处理器 = (
     extractDelta: 增量提取器,
     onDelta?: (delta: string, accumulated: string) => void,
@@ -1175,6 +1313,17 @@ const 创建SSE文本处理器 = (
             throw new Error('Stream response did not contain text/event-stream data frames');
         }
 
+        // [修复] 上游返回 HTTP 200 但零正文增量时，finish_reason 是唯一能说明"为什么没有正文"的信号。
+        // 典型场景：Gemini 系上游（官方/兼容层/中转）命中安全策略时返回 200 + 空 candidates +
+        // finish_reason=SAFETY（官方文档明确 "Candidate.content is empty if content filters block
+        // the output"）；酒馆预设携带的越狱提示词/世界书比项目原生提示词更容易触发该类拦截，
+        // 玩家侧表现就是"只有用酒馆预设才出现、重试也无效"。
+        // 旧实现把所有空响应一律报成笼统的「模型返回了空内容」，玩家拿不到真实原因。
+        if (!accumulated.trim() && lastFinishReason) {
+            const 结束原因错误 = 构建空正文结束原因错误(lastFinishReason);
+            if (结束原因错误) throw 结束原因错误;
+        }
+
         onStreamEnd?.({
             sawDone: doneSignal,
             finishReason: lastFinishReason || undefined,
@@ -1258,6 +1407,15 @@ const 支持XHR流式请求 = (): boolean => {
 // [修复] 旧包/异常包里原生插件未实现时，Capacitor 会抛 "plugin is not implemented"，
 // 记录后本会话不再尝试原生流式，后续请求直接走 XHR/fetch 流式
 let 原生流式插件判定不可用 = false;
+
+/**
+ * 原生桥载荷告警阈值（请求体字符数）。
+ * Android WebView 的 JS→Java 桥对单次下发的大体积字符串会抛
+ * "Java bridge method invocation error"，实际上限随 WebView 版本而变；
+ * 规划分析的全量状态载荷（紧凑序列化后）实测可越过该量级。
+ * 超过阈值只告警并记录诊断，不静默裁剪——裁剪会改变模型可见内容，需产品决策。
+ */
+const 原生桥载荷告警字符数 = 400_000;
 
 const 支持原生流式请求 = (): boolean => {
     if (原生流式插件判定不可用) return false;
@@ -1364,7 +1522,14 @@ const 解析SSE文本原生 = async (
                 }
 
                 if (event.type === 'done') {
-                    settleResolve(processor.完成());
+                    // [修复] 完成() 会因「零正文 + 异常 finish_reason」抛出语义化错误
+                    // （如上游安全策略拦截）。listener 回调里同步抛出的异常不会变成
+                    // Promise reject，必须显式 try 后走 settleReject。
+                    try {
+                        settleResolve(processor.完成());
+                    } catch (error) {
+                        settleReject(error);
+                    }
                     return;
                 }
 
@@ -1407,7 +1572,8 @@ const 解析SSE文本XHR = (
     signal: AbortSignal | undefined,
     extractDelta: 增量提取器,
     onDelta?: (delta: string, accumulated: string) => void,
-    onStreamEnd?: (info: 通用流式结束信息) => void
+    onStreamEnd?: (info: 通用流式结束信息) => void,
+    acceptCompleteJson = false
 ): Promise<string> => new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     const processor = 创建SSE文本处理器(extractDelta, onDelta, onStreamEnd);
@@ -1534,10 +1700,26 @@ const 解析SSE文本XHR = (
                     settleReject(new 协议请求错误(网关超时提示, xhr.status, detail));
                     return;
                 }
+                const 鉴权地址提示 = 翻译鉴权与地址错误提示(xhr.status, detail);
+                if (鉴权地址提示) {
+                    settleReject(new 协议请求错误(鉴权地址提示, xhr.status, detail));
+                    return;
+                }
                 settleReject(new 协议请求错误(`API Error: ${xhr.status}${detail ? ` - ${detail}` : ''}`, xhr.status, detail));
                 return;
             }
             if (!contentType.includes('text/event-stream')) {
+                if (acceptCompleteJson) {
+                    const json = 解析可能是JSON字符串(xhr.responseText || '');
+                    const content = json ? 提取OpenAI完整文本(json) : '';
+                    if (typeof content === 'string' && content.trim()) {
+                        onDelta?.(content, content);
+                        onStreamEnd?.({ sawDone: true, finishReason: 'stop', accumulatedLength: content.length });
+                        settleResolve(content);
+                        return;
+                    }
+                }
+
                 settleReject(new 协议请求错误(`API Error: stream unsupported (content-type=${contentType || 'unknown'})`));
                 return;
             }
@@ -1563,11 +1745,19 @@ const 写入流式诊断日志 = (message: string, detail?: Record<string, unkno
     }
 };
 
+/**
+ * 拿到的已经是**完整响应体**（服务端不支持流式而降级、或 Gemini Interactions 轮询完成），
+ * 此时必须把 onStreamEnd 一并回填为「完整」：
+ * - 只回填 onDelta 的话，上层的流式完整性保护收不到结束信息，
+ *   无法区分「完整但非流式」与「中途被掐断」；
+ * - 非流式响应体本身没有 [DONE] 可等，语义上就是 sawDone: true。
+ */
 const 非流式回填流式回调 = (text: string, streamOptions?: 通用流式选项) => {
-    if (!streamOptions?.stream || typeof streamOptions.onDelta !== 'function') return;
+    if (!streamOptions?.stream) return;
     const finalText = typeof text === 'string' ? text : '';
     if (!finalText) return;
-    streamOptions.onDelta(finalText, finalText);
+    streamOptions.onDelta?.(finalText, finalText);
+    streamOptions.onStreamEnd?.({ sawDone: true, finishReason: 'stop', accumulatedLength: finalText.length });
 };
 
 const 解析可能是JSON字符串 = (text: string): any | null => {
@@ -1667,6 +1857,11 @@ const 请求GeminiInteractions文本 = async (
     });
     if (!createResponse.ok) {
         const detail = await 读取失败详情文本(createResponse, errorDetailLimit);
+        // 与 OpenAI 家族保持一致：401/403/404 与网关超时先翻译成可执行的排查建议。
+        const 创建鉴权地址提示 = 翻译鉴权与地址错误提示(createResponse.status, detail);
+        if (创建鉴权地址提示) throw new 协议请求错误(创建鉴权地址提示, createResponse.status, detail);
+        const 创建网关超时提示 = 翻译网关超时提示(createResponse.status, detail);
+        if (创建网关超时提示) throw new 协议请求错误(创建网关超时提示, createResponse.status, detail);
         throw new 协议请求错误(`Gemini Interactions API Error: ${createResponse.status}${detail ? ` - ${detail}` : ''}`, createResponse.status, detail);
     }
 
@@ -1696,6 +1891,10 @@ const 请求GeminiInteractions文本 = async (
         });
         if (!pollResponse.ok) {
             const detail = await 读取失败详情文本(pollResponse, errorDetailLimit);
+            const 轮询鉴权地址提示 = 翻译鉴权与地址错误提示(pollResponse.status, detail);
+            if (轮询鉴权地址提示) throw new 协议请求错误(轮询鉴权地址提示, pollResponse.status, detail);
+            const 轮询网关超时提示 = 翻译网关超时提示(pollResponse.status, detail);
+            if (轮询网关超时提示) throw new 协议请求错误(轮询网关超时提示, pollResponse.status, detail);
             throw new 协议请求错误(`Gemini Interactions API Error: ${pollResponse.status}${detail ? ` - ${detail}` : ''}`, pollResponse.status, detail);
         }
 
@@ -1868,16 +2067,20 @@ const 请求OpenAI家族文本 = async (
             stream: useStream
         };
         if (是否小米MiMo接口配置(apiConfig)) {
-            body.top_p = 计算小米MiMoTopP(apiConfig, String(requestModel || apiConfig.model));
+            if (!requestOptions?.variableReviewSampling) body.top_p = 计算小米MiMoTopP(apiConfig, String(requestModel || apiConfig.model));
             body.max_completion_tokens = maxOutputTokens;
             body.thinking = { type: 'disabled' };
         } else {
             body.max_tokens = maxOutputTokens;
         }
+        const configuredTopP = 读取自定义TopP(apiConfig);
+        if (requestOptions?.variableReviewSampling && supportsVariableReviewTopP(apiConfig) && configuredTopP !== undefined) {
+            body.top_p = 是否小米MiMo接口配置(apiConfig) ? 计算小米MiMoTopP(apiConfig, String(requestModel || apiConfig.model)) : configuredTopP;
+        }
         if (responseFormat === 'json_object') {
             body.response_format = { type: 'json_object' };
         }
-        if (requestOptions?.disableThinking === true) {
+        if (requestOptions?.disableThinking === true && 支持禁用思考参数(apiConfig)) {
             body.disable_thinking = true;
         }
         const requestHeaders = 构建OpenAI家族请求头(apiConfig);
@@ -1887,8 +2090,21 @@ const 请求OpenAI家族文本 = async (
             写入流式诊断日志('use native stream transport', {
                 endpoint,
                 model: requestModel || apiConfig.model,
-                supplier: apiConfig.供应商
+                supplier: apiConfig.供应商,
+                bodyLength: requestBody.length
             });
+            if (requestBody.length > 原生桥载荷告警字符数) {
+                console.warn('[native.stream.largePayload] 请求体超过原生桥告警阈值', {
+                    bodyLength: requestBody.length,
+                    threshold: 原生桥载荷告警字符数,
+                    model: requestModel || apiConfig.model,
+                    supplier: apiConfig.供应商
+                });
+                写入流式诊断日志('native stream large payload', {
+                    bodyLength: requestBody.length,
+                    threshold: 原生桥载荷告警字符数
+                });
+            }
             try {
                 return 收尾流式结果(await 解析SSE文本原生(
                     endpoint,
@@ -1917,9 +2133,16 @@ const 请求OpenAI家族文本 = async (
                         message: 读取错误消息(error)
                     });
                 } else {
-                    if (!downgradedFromStream && 错误疑似不支持流式(error)) {
+                    if (!requestOptions?.variableReviewSampling && !downgradedFromStream
+                        && (错误疑似不支持流式(error) || 是否原生桥载荷错误(error))) {
+                        // 桥接层拒绝大体积请求：请求零字节发出（无重复计费风险），
+                        // 且非流式走请求拦截而非桥，可安全降级重试一次。
                         useStream = false;
                         downgradedFromStream = true;
+                        写入流式诊断日志('native bridge payload rejected, downgrade to non-stream (bypasses bridge)', {
+                            message: 读取错误消息(error),
+                            bodyLength: requestBody.length
+                        });
                         continue;
                     }
                     if (usePrefixMode && 错误疑似不支持Prefix(error)) {
@@ -1945,7 +2168,8 @@ const 请求OpenAI家族文本 = async (
                 signal,
                 创建OpenAI流增量提取器({ includeReasoning: requestOptions?.includeReasoning }),
                 streamOptions?.onDelta,
-                effectiveStreamOptions?.onStreamEnd
+                effectiveStreamOptions?.onStreamEnd,
+                requestOptions?.variableReviewSampling === true
             );
             try {
                 return 收尾流式结果(await 执行XHR流式(endpoint));
@@ -1966,7 +2190,7 @@ const 请求OpenAI家族文本 = async (
                 //   ③ 非流式路径（fetchWithCorsRelay）早已是同样的取舍，此处至少多了
                 //      "零输出才重发"这一层额外保护。
                 // 不重试则网页版对无 CORS 的接口彻底不可用，代价更大。
-                if (可以安全改走中转(error) && 中转可用()) {
+                if (!requestOptions?.variableReviewSampling && 可以安全改走中转(error) && 中转可用()) {
                     const 中转地址 = 构建AI中转地址(endpoint);
                     写入流式诊断日志('direct xhr stream blocked (suspected CORS), retrying via same-origin relay', { endpoint });
                     try {
@@ -1982,7 +2206,16 @@ const 请求OpenAI家族文本 = async (
                         throw relayError;
                     }
                 }
-                if (!downgradedFromStream && 错误疑似不支持流式(error)) {
+                if (!requestOptions?.variableReviewSampling && !downgradedFromStream
+                    && (错误疑似不支持流式(error) || 是否原生桥载荷错误(error))) {
+                    // 与原生流式路径同理：桥接层拒绝大体积请求时请求并未发出，
+                    // 降级非流式（走请求拦截，不经桥）重试一次。
+                    if (是否原生桥载荷错误(error)) {
+                        写入流式诊断日志('xhr bridge payload rejected, downgrade to non-stream (bypasses bridge)', {
+                            message: 读取错误消息(error),
+                            bodyLength: body.length
+                        });
+                    }
                     useStream = false;
                     downgradedFromStream = true;
                     continue;
@@ -1996,12 +2229,15 @@ const 请求OpenAI家族文本 = async (
             }
         }
 
-        const { response, viaRelay } = await fetchWithCorsRelay(endpoint, {
+        const fetchOptions = {
             method: 'POST',
             headers: requestHeaders,
             body: requestBody,
             signal
-        }, () => {
+        };
+        const { response, viaRelay } = requestOptions?.variableReviewSampling
+            ? { response: await fetch(endpoint, fetchOptions), viaRelay: false }
+            : await fetchWithCorsRelay(endpoint, fetchOptions, () => {
             写入流式诊断日志('direct fetch blocked (suspected CORS), retrying via same-origin relay', { endpoint });
         });
 
@@ -2014,6 +2250,9 @@ const 请求OpenAI家族文本 = async (
             // 网关超时（524/504）同样要给出可执行说明，而不是一串 `error code: 524`。
             const 网关超时提示 = 翻译网关超时提示(response.status, detail);
             if (网关超时提示) throw new 协议请求错误(网关超时提示, response.status, detail);
+            // 401/403/404 是配置问题的概率远大于游戏故障，同样翻译成排查建议。
+            const 鉴权地址提示 = 翻译鉴权与地址错误提示(response.status, detail);
+            if (鉴权地址提示) throw new 协议请求错误(鉴权地址提示, response.status, detail);
             if (useStream && 响应详情疑似不支持流式(detail) && !downgradedFromStream) {
                 useStream = false;
                 downgradedFromStream = true;
@@ -2038,6 +2277,16 @@ const 请求OpenAI家族文本 = async (
 
         const contentType = (response.headers.get('content-type') || '').toLowerCase();
         if (!contentType.includes('text/event-stream')) {
+            if (requestOptions?.variableReviewSampling) {
+                // 兼容忽略stream参数直接返回完整JSON的接口，复用同一响应而非重新付费请求。
+                const raw = await response.text();
+                const json = 解析可能是JSON字符串(raw);
+                const content = json ? 提取OpenAI完整文本(json) : '';
+                if (typeof content !== 'string' || !content.trim()) throw new 协议请求错误('变量审查接口未返回有效流或完整JSON；未自动重发。');
+                非流式回填流式回调(content, streamOptions);
+                return 校验非空结果(content);
+            }
+
             if (!downgradedFromStream) {
                 useStream = false;
                 downgradedFromStream = true;
@@ -2055,7 +2304,7 @@ const 请求OpenAI家族文本 = async (
             });
             return 收尾流式结果(await 解析SSE文本(response, 创建OpenAI流增量提取器({ includeReasoning: requestOptions?.includeReasoning }), streamOptions?.onDelta, 'Stream body is empty', effectiveStreamOptions?.onStreamEnd));
         } catch (error) {
-            if (!downgradedFromStream && 错误疑似不支持流式(error)) {
+            if (!requestOptions?.variableReviewSampling && !downgradedFromStream && 错误疑似不支持流式(error)) {
                 useStream = false;
                 downgradedFromStream = true;
                 continue;
@@ -2076,6 +2325,7 @@ export const 请求模型文本 = async (
     apiConfig: 当前可用接口结构,
     messages: 通用消息[],
     options: {
+        variableReviewSampling?: boolean;
         temperature: number;
         signal?: AbortSignal;
         streamOptions?: 通用流式选项;
@@ -2098,7 +2348,7 @@ export const 请求模型文本 = async (
             );
         }, {
             signal: options.signal,
-            retries: 1,
+            retries: options.variableReviewSampling ? 0 : 1,
             baseDelayMs: 1200
         });
     }
@@ -2140,6 +2390,7 @@ export const 请求模型文本 = async (
                 effectiveResponseFormat,
                 options.errorDetailLimit,
                 {
+                    variableReviewSampling: options.variableReviewSampling,
                     includeReasoning: options.includeReasoning,
                     disableThinking: options.disableThinking,
                     stripReasoning: options.stripReasoning,
@@ -2155,7 +2406,7 @@ export const 请求模型文本 = async (
             return attemptResult;
         }, {
             signal: options.signal,
-            retries: 2,
+            retries: options.variableReviewSampling ? 0 : 2,
             baseDelayMs: 800
         });
     } catch (error) {

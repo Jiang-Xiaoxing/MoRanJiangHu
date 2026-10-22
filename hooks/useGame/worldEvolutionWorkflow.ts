@@ -21,6 +21,7 @@ import { 创建工作流性能诊断 } from '../../utils/performanceDebug';
 import { 后台分段执行, 后台让出主线程 } from '../../utils/backgroundScheduling';
 import { 执行游戏后台重计算 } from '../../utils/gameHeavyWorkerClient';
 import { buildNpcSettlementCommands, findNpcIndex, mergeNpcSettlementCandidates } from './npcEvolutionSettlement';
+import { 执行带完整性校验的请求 } from './streamIntegrity';
 
 export type 世界演变触发参数 = {
     来源?: 'manual' | 'auto_due' | 'story_dynamic' | 'story_dynamic_and_due';
@@ -126,7 +127,7 @@ const 检查世界演变中断 = (signal?: AbortSignal): void => {
 };
 
 const 执行世界演变带超时 = async <T,>(
-    task: (signal: AbortSignal) => Promise<T>,
+    task: (signal: AbortSignal, 重置为完整预算: () => void) => Promise<T>,
     parentSignal?: AbortSignal,
     timeoutMs = 世界演变请求超时毫秒
 ): Promise<T> => {
@@ -135,6 +136,16 @@ const 执行世界演变带超时 = async <T,>(
     let timer: number | undefined;
     const startedAt = Date.now();
     let rejectAbort: ((reason?: any) => void) | null = null;
+    let rejectTimeout: ((reason?: any) => void) | null = null;
+    const 重置为完整预算 = () => {
+        // 降级非流式重试前重新计满：计时器从流式请求发起就开始走，
+        // 流式阶段耗掉的预算会让重试几乎必然超时。
+        if (timer) window.clearTimeout(timer);
+        timer = window.setTimeout(() => {
+            controller.abort();
+            rejectTimeout?.(创建世界演变超时错误(timeoutMs));
+        }, timeoutMs);
+    };
     const abortFromParent = () => {
         const reason = parentSignal?.reason || 创建世界演变中断错误();
         if (!controller.signal.aborted) controller.abort(reason);
@@ -146,12 +157,10 @@ const 执行世界演变带超时 = async <T,>(
     });
     try {
         const value = await Promise.race([
-            task(controller.signal),
+            task(controller.signal, 重置为完整预算),
             new Promise<T>((_, reject) => {
-                timer = window.setTimeout(() => {
-                    controller.abort();
-                    reject(创建世界演变超时错误(timeoutMs));
-                }, timeoutMs);
+                rejectTimeout = reject;
+                重置为完整预算();
             }),
             new Promise<T>((_, reject) => {
                 rejectAbort = reject;
@@ -434,7 +443,7 @@ export const 执行世界演变更新工作流 = async (
 
         const 世界演变非流式输出 = worldRuntimeGameConfig.启用非流式输出
             || deps.apiSettings.功能模型占位?.世界演变非流式输出 === true;
-        const result = await probe.timeAsync('世界演变模型请求总耗时', () => 执行世界演变带超时(signal => (
+        const 发起世界演变请求 = (signal: AbortSignal, streamOptions?: { stream?: boolean; onDelta?: (delta: string, accumulated: string) => void; onStreamEnd?: (info: any) => void }) => (
             textAIService.generateWorldEvolutionUpdate(
                 worldContext,
                 worldApi,
@@ -444,13 +453,38 @@ export const 执行世界演变更新工作流 = async (
                 worldCotPrompt,
                 fandomPromptBundle.enabled,
                 独立世界演变GPT模式,
-                世界演变非流式输出
-                    ? undefined
-                    : params.onStreamDelta
-                        ? { stream: true, onDelta: params.onStreamDelta }
-                        : undefined
+                streamOptions
             )
-        ), params?.signal, worldEvolutionTimeoutMs), { timeoutMs: worldEvolutionTimeoutMs });
+        );
+        /**
+         * 世界演变的命令块被截断后往往仍能解析出部分合法命令，
+         * 于是「世界只演变了一半」会被静默接受。走流式时校验结束标记，
+         * 疑似被上游掐断就降级非流式重试一次（世界演变输出量小，重试成本可接受）。
+         */
+        const result = await probe.timeAsync('世界演变模型请求总耗时', () => 执行世界演变带超时(async (signal, 重置为完整预算) => {
+            const 完整性结果 = await 执行带完整性校验的请求({
+                功能名: '世界演变',
+                强制非流式: 世界演变非流式输出 || !params.onStreamDelta,
+                // 截断的命令块仍能解析出部分合法命令，直接合并就是「世界只演变了一半」。
+                // 重试也失败时必须整体丢弃，走外层既有的失败态提示。
+                重试失败处置: '抛出错误',
+                重试前重置超时: 重置为完整预算,
+                发起流式请求: (streamOptions) => 发起世界演变请求(signal, {
+                    stream: true,
+                    onDelta: params.onStreamDelta,
+                    onStreamEnd: streamOptions.onStreamEnd
+                }),
+                发起非流式请求: () => 发起世界演变请求(signal),
+                onFallback: (info) => {
+                    if (info.重试失败) {
+                        console.warn('[世界演变] 降级非流式重试仍失败，丢弃本次不完整结果', info);
+                        return;
+                    }
+                    console.warn('[世界演变] 流式输出疑似被上游中断，降级为非流式重新生成', info);
+                }
+            });
+            return 完整性结果.结果;
+        }, params?.signal, worldEvolutionTimeoutMs), { timeoutMs: worldEvolutionTimeoutMs });
         检查世界演变中断(params?.signal);
         probe.mark('世界演变模型返回', {
             rawCommandCount: Array.isArray(result.commands) ? result.commands.length : 0,

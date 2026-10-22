@@ -1,3 +1,6 @@
+import { naturalProseSettingsService } from '../../services/naturalProseSettingsService';
+import { buildNpcTemplateNameContext } from '../../services/npcTemplateNameContext';
+import { 校验响应未命中模板姓名黑名单 } from './sendWorkflow';
 import * as textAIService from '../../services/ai/text';
 import * as dbService from '../../services/dbService';
 import { recordAiParseFailureDiagnostic } from '../../services/diagnosticContext';
@@ -80,6 +83,7 @@ import { 保护开局生成门派状态 } from './storyState';
 import { 修复开局伙伴社交列表 } from '../../utils/openingCompanion';
 import { 同步在场NPC当前位置 } from './responseCommandProcessor';
 import { 生成地图更新 } from './mapUpdateWorkflow';
+import { 执行带完整性校验的请求 } from './streamIntegrity';
 
 const 开局规划分析请求超时毫秒 = 90000;
 const 开场剧情慢首包提示毫秒 = 30000;
@@ -327,7 +331,7 @@ type 开场剧情生成依赖 = {
     提取新增NPC列表: (beforeList: any[], afterList: any[]) => any[];
 };
 
-const 构建开局角色建档摘要 = (
+export const 构建开局角色建档摘要 = (
     roleData: any,
     options?: { cultivationSystemEnabled?: boolean }
 ): string => {
@@ -373,7 +377,8 @@ const 构建开局角色建档摘要 = (
         `- 当前所属门派ID：${纯文本(roleData?.所属门派ID)}`,
         '- 穿着指导：主角的服装必须与性别、外貌、性格一致。扶她角色不得穿完全遮蔽下体的裤子，应选择裙装或能体现其性别特征的服饰；男娘角色同样应穿符合其性别表达的服装。AI 不得默认给所有角色套男装。',
         '以上建档信息仅作为本回合初始化依据，不代表这些字段已经自动写入前端变量；除非你在 `<变量规划>` 中明确列出需要初始化的内容，否则它们不算已进入本回合初始化结果。',
-        '若建档已给出天赋或出身背景的 名称/描述/效果，生成开局时必须按原文完整承接，不得省略、压缩成只剩名称，或擅自改写其语义。'
+        '若建档已给出天赋或出身背景的 名称/描述/效果，生成开局时必须按原文完整承接，不得省略、压缩成只剩名称，或擅自改写其语义。',
+        '若以上建档文本（出身背景、天赋、称号）或标记为 `【开局额外约束】`、`【开局额外要求】` 的内容中已写明主角的门派/组织归属，第0回合必须按该描述初始化 `玩家门派`，不得另行随机生成新组织或改写归属。'
     ].join('\n');
 };
 
@@ -542,7 +547,7 @@ const 执行开场剧情流式请求带空闲超时 = async <T,>(
 
 const 执行开局规划带超时 = async <T,>(
     parentSignal: AbortSignal,
-    task: (signal: AbortSignal) => Promise<T>,
+    task: (signal: AbortSignal, 重置为完整预算: () => void) => Promise<T>,
     timeoutMs = 开局规划分析请求超时毫秒
 ): Promise<T> => {
     if (parentSignal.aborted) {
@@ -551,18 +556,27 @@ const 执行开局规划带超时 = async <T,>(
     const controller = new AbortController();
     const timeoutError = 创建开局规划超时错误(timeoutMs);
     let timer: ReturnType<typeof setTimeout> | null = null;
+    const armTimer = () => {
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(() => {
+            if (!controller.signal.aborted) {
+                controller.abort(timeoutError);
+            }
+            rejectRef?.(timeoutError);
+        }, timeoutMs);
+    };
+    // 降级非流式重试前重新计满：外层计时器从流式请求发起就开始走，
+    // 流式阶段耗掉的预算会让重试几乎必然超时。
+    const 重置为完整预算 = armTimer;
+    let rejectRef: ((reason?: any) => void) | null = null;
     const abortByParent = () => controller.abort(parentSignal.reason || new DOMException('Aborted', 'AbortError'));
     parentSignal.addEventListener('abort', abortByParent, { once: true });
     try {
         return await Promise.race([
-            task(controller.signal),
+            task(controller.signal, 重置为完整预算),
             new Promise<T>((_, reject) => {
-                timer = setTimeout(() => {
-                    if (!controller.signal.aborted) {
-                        controller.abort(timeoutError);
-                    }
-                    reject(timeoutError);
-                }, timeoutMs);
+                rejectRef = reject;
+                armTimer();
             })
         ]);
     } catch (error) {
@@ -572,6 +586,7 @@ const 执行开局规划带超时 = async <T,>(
         throw error;
     } finally {
         parentSignal.removeEventListener('abort', abortByParent);
+        rejectRef = null;
         if (timer) {
             clearTimeout(timer);
         }
@@ -664,6 +679,7 @@ export const 执行开场剧情生成工作流 = async (
     let openingInputTokens = 0;
 
     try {
+        const naturalProseSnapshot = await naturalProseSettingsService.load();
         const 写入或插入提示词 = (
             promptPool: 提示词结构[],
             promptId: string,
@@ -1135,6 +1151,10 @@ export const 执行开场剧情生成工作流 = async (
             requireActionOptionsTag: openingGameConfig.启用行动选项 !== false,
             autoRetryEnabled: openingAutoRetryEnabled
         }]);
+        const npcNameContext = await buildNpcTemplateNameContext(
+            { ...openingStatePayload, ...options?.命令基态, 社交: options?.命令基态?.社交 ?? contextData.社交 ?? [] },
+            options?.开局配置, options?.开局额外要求 || ''
+        );
         const aiResult = await deps.执行带自动重试的生成请求<textAIService.StoryResponseResult>({
             enabled: openingAutoRetryEnabled,
             onRetry: (attempt, maxAttempts, reason) => {
@@ -1184,6 +1204,7 @@ export const 执行开场剧情生成工作流 = async (
                         openingTavernPresetModeEnabled ? '' : openingCombinedExtraPrompt,
                         {
                             orderedMessages: openingMessagesForAttempt,
+                            naturalProse: naturalProseSnapshot,
                             enableCotInjection: openingCotPseudoEnabled,
                             leadingSystemPrompt: openingContext.contextPieces.AI角色声明,
                             styleAssistantPrompt: [openingPerspectivePrompt, openingStyleAssistantPrompt, openingRealWorldModePrompt].filter(Boolean).join('\n\n'),
@@ -1200,14 +1221,17 @@ export const 执行开场剧情生成工作流 = async (
                             includeReasoning: (openingGameConfig.DeepSeek策略?.开局Thinking === true) || (openingGameConfig.GLM策略?.开局Thinking === true)
                         }
                     );
-                if (!useStreaming) {
-                    return requestOpeningStory(controller.signal);
+                const result = !useStreaming
+                    ? await requestOpeningStory(controller.signal)
+                    : await 执行开场剧情流式请求带空闲超时(
+                        controller.signal,
+                        (signal, markStreamActivity) => requestOpeningStory(signal, markStreamActivity),
+                        获取游玩请求超时毫秒(openingGameConfig.游玩请求超时设置)
+                    );
+                if (openingGameConfig.启用正文词汇审查 !== false) {
+                    校验响应未命中模板姓名黑名单(result.response, result.rawText, '开局主剧情', npcNameContext);
                 }
-                return 执行开场剧情流式请求带空闲超时(
-                    controller.signal,
-                    (signal, markStreamActivity) => requestOpeningStory(signal, markStreamActivity),
-                    获取游玩请求超时毫秒(openingGameConfig.游玩请求超时设置)
-                );
+                return result;
             }
         });
         let aiData = aiResult.response;
@@ -1508,7 +1532,8 @@ export const 执行开场剧情生成工作流 = async (
                         environment: simulatedOpeningState.环境,
                         social: simulatedOpeningState.社交,
                         history: [],
-                        extraTexts: [openingBodyText, openingVariablePlanText]
+                        extraTexts: [openingBodyText, openingVariablePlanText],
+                        gameConfig: openingGameConfig
                     }).combinedText, openingGameConfig);
                     const variableExtraPrompt = [
                         开局变量生成附加提示词,
@@ -1519,7 +1544,7 @@ export const 执行开场剧情生成工作流 = async (
                         .join('\n\n');
                     return 执行变量模型校准工作流(
                         {
-                            playerInput: '',
+                            playerInput: options?.开局额外要求 || '',
                             parsedResponse: responseForExecution,
                             baseState: {
                                 角色: commandBaseState.角色,
@@ -1692,7 +1717,8 @@ export const 执行开场剧情生成工作流 = async (
                         environment: simulatedOpeningState.环境,
                         world: simulatedOpeningState.世界,
                         history: [],
-                        extraTexts: [openingBodyText, openingPlanText, ...worldCommandTexts]
+                        extraTexts: [openingBodyText, openingPlanText, ...worldCommandTexts],
+                        gameConfig: openingGameConfig
                     }).combinedText, openingGameConfig);
                     const worldNovelDecompositionPrompt = await 获取激活小说拆分注入文本(
                         deps.apiConfig,
@@ -1729,29 +1755,48 @@ export const 执行开场剧情生成工作流 = async (
                         dynamicHints: Array.isArray(responseForExecution.dynamic_world) ? responseForExecution.dynamic_world : [],
                         dueHints: []
                     });
-                    return textAIService.generateWorldEvolutionUpdate(
-                        worldContext,
-                        openingWorldApi,
-                        controller.signal,
-                        worldExtraPrompt,
-                        openingGameConfig.启用COT伪装注入 !== false ? 世界演变COT伪装历史消息提示词 : '',
-                        构建世界演变COT提示词({ fandom: openingRuntimeFandomBundle.enabled }),
-                        openingRuntimeFandomBundle.enabled,
-                        openingGameConfig.独立APIGPT模式?.世界演变 === true,
-                        开局世界演变非流式输出
-                            ? undefined
-                            : {
-                                stream: true,
-                                onDelta: (_delta: string, accumulated: string) => {
-                                    if (controller.signal.aborted) return;
-                                    设置开局世界演变进度({
-                                        phase: 'start',
-                                        text: '正在流式初始化动态世界...',
-                                        rawText: accumulated
-                                    });
-                                }
-                            }
+                    const 发起开局世界演变请求 = (streamOptions?: { stream?: boolean; onDelta?: (delta: string, accumulated: string) => void; onStreamEnd?: (info: any) => void }) => (
+                        textAIService.generateWorldEvolutionUpdate(
+                            worldContext,
+                            openingWorldApi,
+                            controller.signal,
+                            worldExtraPrompt,
+                            openingGameConfig.启用COT伪装注入 !== false ? 世界演变COT伪装历史消息提示词 : '',
+                            构建世界演变COT提示词({ fandom: openingRuntimeFandomBundle.enabled }),
+                            openingRuntimeFandomBundle.enabled,
+                            openingGameConfig.独立APIGPT模式?.世界演变 === true,
+                            streamOptions
+                        )
                     );
+                    // 与游戏内世界演变同源的风险：命令块截断后仍能解析出部分合法命令，
+                    // 「世界只初始化了一半」会被静默接受。这里校验结束标记并降级非流式重试。
+                    const 完整性结果 = await 执行带完整性校验的请求({
+                        功能名: '开局世界演变',
+                        强制非流式: 开局世界演变非流式输出,
+                        // 截断的命令块仍能解析出部分合法命令，合并就是「世界只初始化了一半」。
+                        重试失败处置: '抛出错误',
+                        发起流式请求: (streamOptions) => 发起开局世界演变请求({
+                            stream: true,
+                            onDelta: (_delta: string, accumulated: string) => {
+                                if (controller.signal.aborted) return;
+                                设置开局世界演变进度({
+                                    phase: 'start',
+                                    text: '正在流式初始化动态世界...',
+                                    rawText: accumulated
+                                });
+                            },
+                            onStreamEnd: streamOptions.onStreamEnd
+                        }),
+                        发起非流式请求: () => 发起开局世界演变请求(),
+                        onFallback: (info) => {
+                            if (info.重试失败) {
+                                console.warn('[开局世界演变] 降级非流式重试仍失败，丢弃本次不完整结果', info);
+                                return;
+                            }
+                            console.warn('[开局世界演变] 流式输出疑似被上游中断，降级为非流式重新生成', info);
+                        }
+                    });
+                    return 完整性结果.结果;
                 },
                 onError: (errorText) => {
                     设置开局世界演变进度({
@@ -1982,7 +2027,8 @@ export const 执行开场剧情生成工作流 = async (
                         social: simulatedOpeningState.社交,
                         world: simulatedOpeningState.世界,
                         history: [],
-                        extraTexts: [openingBodyText, openingPlanText]
+                        extraTexts: [openingBodyText, openingPlanText],
+                        gameConfig: openingGameConfig
                     }).combinedText, openingGameConfig);
                     const planningNovelDecompositionPrompt = await 获取激活小说拆分注入文本(
                         deps.apiConfig,
@@ -2007,21 +2053,23 @@ export const 执行开场剧情生成工作流 = async (
                         .filter(Boolean)
                         .join('\n\n');
                     const planningTimeouts = 获取游玩请求超时毫秒(openingGameConfig.游玩请求超时设置);
-                    const planningResult = await 执行开局规划带超时(controller.signal, (signal) => textAIService.generatePlanningAnalysis({
+const 开局规划请求参数 = {
                         playerName: (simulatedOpeningState.角色?.姓名 || deps.角色?.姓名 || '').trim() || '未命名',
+                        // [桥接体载体积] 与回合内规划分析一致：紧凑序列化，避免美化打印把
+                        // 请求体撑过 Android WebView 原生桥上限（space=2 → space=0）。
                         currentStoryJson: JSON.stringify(裁剪修炼体系上下文数据({
                             剧情: simulatedOpeningState.剧情 || {},
                             [fandomEnabled ? '同人剧情规划' : '剧情规划']: activeStoryPlan || {}
-                        }, openingGameConfig), null, 2),
+                        }, openingGameConfig)),
                         currentHeroinePlanJson: JSON.stringify(裁剪修炼体系上下文数据(
                             heroineEnabled
                                 ? { [fandomEnabled ? '同人女主剧情规划' : '女主剧情规划']: activeHeroinePlan || {} }
                                 : {},
                             openingGameConfig
-                        ), null, 2),
-                        worldJson: JSON.stringify(裁剪修炼体系上下文数据(simulatedOpeningState.世界 || {}, openingGameConfig), null, 2),
-                        socialJson: JSON.stringify(裁剪修炼体系上下文数据(simulatedOpeningState.社交 || [], openingGameConfig), null, 2),
-                        envJson: JSON.stringify(裁剪修炼体系上下文数据(simulatedOpeningState.环境 || {}, openingGameConfig), null, 2),
+                        )),
+                        worldJson: JSON.stringify(裁剪修炼体系上下文数据(simulatedOpeningState.世界 || {}, openingGameConfig)),
+                        socialJson: JSON.stringify(裁剪修炼体系上下文数据(simulatedOpeningState.社交 || [], openingGameConfig)),
+                        envJson: JSON.stringify(裁剪修炼体系上下文数据(simulatedOpeningState.环境 || {}, openingGameConfig)),
                         recentBodiesText: planningRecentBodiesText,
                         currentPlanText: openingPlanText,
                         auditFocusText: planningAuditFocusText,
@@ -2031,19 +2079,48 @@ export const 执行开场剧情生成工作流 = async (
                         fandomEnabled,
                         extraPrompt: planningExtraPrompt,
                         gptMode: openingGameConfig.独立APIGPT模式?.规划分析 === true
-                    }, openingPlanningApi, signal, 开局规划分析非流式输出
-                        ? undefined
-                        : {
-                            stream: true,
-                            onDelta: (_delta: string, accumulated: string) => {
-                                if (controller.signal.aborted) return;
-                                设置开局规划进度({
-                                    phase: 'start',
-                                    text: '正在流式初始化剧情规划...',
-                                    rawText: accumulated
-                                });
+                    };
+                    // 与游戏内规划分析同源的风险：补丁被截断后仍能解析出部分合法补丁，
+                    // 「开局规划只写了一半」会被静默接受。这里校验结束标记并降级非流式重试。
+                    const planningResult = (await 执行开局规划带超时(controller.signal, async (signal, 重置为完整预算) => {
+                        const 完整性结果 = await 执行带完整性校验的请求({
+                            功能名: '开局规划分析',
+                            强制非流式: 开局规划分析非流式输出,
+                            // 截断的规划补丁仍能解析出部分合法补丁，合并进去就是「开局规划只写了一半」。
+                            重试失败处置: '抛出错误',
+                            重试前重置超时: 重置为完整预算,
+                            发起流式请求: (streamOptions) => textAIService.generatePlanningAnalysis(
+                                开局规划请求参数,
+                                openingPlanningApi,
+                                signal,
+                                {
+                                    stream: true,
+                                    onDelta: (_delta: string, accumulated: string) => {
+                                        if (controller.signal.aborted) return;
+                                        设置开局规划进度({
+                                            phase: 'start',
+                                            text: '正在流式初始化剧情规划...',
+                                            rawText: accumulated
+                                        });
+                                    },
+                                    onStreamEnd: streamOptions.onStreamEnd
+                                }
+                            ),
+                            发起非流式请求: () => textAIService.generatePlanningAnalysis(
+                                开局规划请求参数,
+                                openingPlanningApi,
+                                signal
+                            ),
+                            onFallback: (info) => {
+                                if (info.重试失败) {
+                                    console.warn('[开局规划分析] 降级非流式重试仍失败，保留流式已收到的结果', info);
+                                    return;
+                                }
+                                console.warn('[开局规划分析] 流式输出疑似被上游中断，降级为非流式重新生成', info);
                             }
-                        }), planningTimeouts.firstResponseMs);
+                        });
+                        return 完整性结果.结果;
+                    }, planningTimeouts.firstResponseMs));
                     const planningCommands = [
                         ...过滤规划补丁命令(planningResult.commands, ['剧情', 'gameState.剧情']),
                         ...过滤规划补丁命令(planningResult.commands, activeStoryPlanTargets),

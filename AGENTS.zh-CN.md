@@ -65,6 +65,19 @@
 - `/api/apk/latest.json` 显示新版本不足以作为网站部署成功的证据。它只对 APK/update-manifest 通道有效，且只在 release-manifest 发布步骤运行之后才有意义。
 - 如果上述静态资源检查未通过，网站部署即为**未完成**——应重新执行 `npm run build` + `wrangler deploy`（清除代理变量）并重新验证，而不是报告成功。
 
+## APK 黑屏发布闸门（关键——v1.0.674 与 v1.0.675 都发出了 100% 黑屏的 APK）
+
+- **事故**：v1.0.674 和 v1.0.675 的 APK 里，`assets/public/index.html` 引用的路径是 `/workbuddy/resources/vendor/PortableGit/assets/...`，而不是 `/assets/...`。这些路径是 Git Bash 把仓库绝对路径 `/f/code/MoRanJiangHu` 做的 MSYS 路径转换结果。APK 内**根本不存在**这些文件，主 bundle 全部 404，应用渲染成纯黑屏。玩家反馈「重新下载还是黑屏」——因为每一个已发布副本都是坏的，重新下载不可能有用。
+- **根因**：构建过程走的是 Git Bash，某一步让 MSYS 路径转换改写了 `index.html` 里烘焙的 `--base` 绝对路径。**这不是缓存或下载问题**，所以通道级校验（大小 / sha256）根本查不出来 —— APK 自身是自洽的，上传也确实成功了。
+- **闸门零 —— 构建期断言（最快，让这个缺陷根本不可能产生）**：`vite.config.ts` 会识别任何「长得像文件系统路径」的 `VITE_BASE_PATH`（盘符、反斜杠、`:数字`，或斜杠分隔超过一段）并**直接抛错终止构建**。走正常构建路径已经无法产出被污染的 APK。**不要删除或放宽这个检查。**
+- **首选方式：`npm run apk:build:release`** —— 一条命令串起 构建 → 资源同步 → 裁剪 → gradle → APK 体积合理性检查 → 闸门一 → 闸门二，任何一步失败立刻以非 0 退出。用它，不要再手工拼步骤。`--skip-gradle` 表示复用现有 APK 只重跑闸门。
+- **强制闸门 —— 任何 APK 上传 / 部署之前必须跑**：
+  1. `npm run apk:verify-assets` → 必须打印 `PASS`。当 `index.html` 里出现 `PortableGit` / `/workbuddy/` 路径，或任一引用的本地文件不在 APK 内时，该脚本失败（退出码 1）。
+  2. `npm run apk:blackscan -- <解压后的 assets/public 目录> <标签>` → 必须报 `RENDER_OK`。它会在模拟 Pixel 7 的浏览器里用解压出来的 APK 资源真实启动并断言界面确实画出来了。报 `BLACKSCREEN` 就禁止发布。
+- **三道闸门都要写进发布检查清单。没跑过的构建一律不可发布**，无论 gradle / wrangler / 上传步骤看起来多成功。
+- 闸门不通过时**不要手工改 APK**。用 `vite build --base=/` + `npm run build:apk` 重新构建，并确认每次 `robocopy` 都带 `MSYS2_ARG_CONV_EXCL='*'`。
+- 历史教训：v1.0.674 的修复提交（`c8cc3a9`）只改了发布元数据，**没有修构建链**，所以同样的缺陷在 v1.0.675 又犯了一次。上面的闸门才是真正的修复。
+
 ## Worker Functions 重编译与部署后实测规则（关键——源于一次"部署了旧代码"事故）
 
 - `wrangler deploy` 打印 `Success` / `Uploaded N files` 只代表"上传动作完成"，**不代表你的代码改动已经生效**。static assets 和 worker functions 都可能没真正上新。

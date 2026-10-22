@@ -1,6 +1,25 @@
 import { describe, expect, it, vi } from 'vitest';
 import { 执行NPC生图工作流, 构建词组转化性别硬约束 } from '../hooks/useGame/npcImageWorkflow';
 
+vi.mock('../services/ai/image', () => ({
+    generateNpcImagePrompt: vi.fn(async () => ({ 原始描述: '{}', 生图词组: 'masterpiece, 1girl, inn background' })),
+    buildNpcDirectImagePrompt: vi.fn(() => ({ 原始描述: '{}', 生图词组: 'masterpiece, 1girl, inn background' })),
+    构建角色锚点注入提示词: vi.fn(() => ''),
+    构建最终图片提示词: vi.fn((prompt: string) => ({
+        前置正向提示词: '',
+        主体正向提示词: prompt,
+        后置正向提示词: '',
+        最终正向提示词: prompt,
+        最终负向提示词: 'lowres',
+        带内联负面提示词的正向提示词: prompt,
+        尺寸: '1024x1024',
+        宽度: 1024,
+        高度: 1024
+    })),
+    generateImageByPrompt: vi.fn(async () => ({ 图片URL: 'https://example.com/generated.png' })),
+    persistImageAssetLocally: vi.fn(async (result: any) => result)
+}));
+
 const 构建NPC生图依赖 = (socialList: any[]) => {
     const 创建NPC生图任务 = vi.fn((params: any) => ({ id: 'task_1', ...params }));
     const 追加NPC生图任务 = vi.fn();
@@ -131,5 +150,96 @@ describe('npc image workflow age constraints', () => {
         expect(constraint).toContain('heroic beauty');
         expect(constraint).toContain('女性主体');
         expect(constraint).toContain('日常默认不应主动露出');
+    });
+});
+
+describe('npc image workflow young age prefix regression', () => {
+    // 玩家反馈：18/20/32 岁年轻女性角色的提示词有时被加上 elderly appearance, aged face。
+    // 根因：首次判定 young_adult 生成“不得仅因真实年龄称为老妇、老妪或老太婆”约束，
+    // 二次判断把约束放回人物描述后，老态关键词匹配读到“老妇”却没识别“不得”，误入 elderly 分支。
+    for (const 年龄 of [18, 20, 32]) {
+        it(`keeps a ${年龄}-year-old female NPC young when the derived constraint is fed back`, () => {
+            const baseData = {
+                性别: '女',
+                年龄,
+                视觉年龄约束: '真实年龄只代表经历；外貌按青年成年人描写。；不得仅因真实年龄称为老妇、老妪或老太婆。',
+                视觉年龄正向提示词: 'adult, young adult, youthful adult face'
+            };
+            const constraint = 构建词组转化性别硬约束('女', 年龄, baseData);
+
+            // 正向区必须是青年/成熟成年，不能出现 elderly 分支的“elderly appearance, aged face”组合
+            expect(constraint).toContain('开头必须包含：1woman, female, adult woman, feminine face, female body');
+            expect(constraint).not.toContain('elderly appearance, aged face');
+            expect(constraint).not.toContain('adult, elderly');
+            // 约束原文仍会下发给词组转化器
+            expect(constraint).toContain('不得仅因真实年龄称为老妇');
+        });
+    }
+
+    it('uses the custom fixed gender prefix when configured', () => {
+        const constraint = 构建词组转化性别硬约束('女', 20, { 性别: '女', 年龄: 20 }, '1woman, female, solo, woman');
+
+        expect(constraint).toContain('1woman, female, solo, woman');
+        expect(constraint).not.toContain('adult woman');
+    });
+
+    it('keeps built-in fixed gender prefix when no custom prefix is configured', () => {
+        const constraint = 构建词组转化性别硬约束('女', 20, { 性别: '女', 年龄: 20 });
+
+        expect(constraint).toContain('1woman, female, adult woman, feminine face, female body');
+    });
+});
+
+describe('npc image workflow full-flow age prefix regression', () => {
+    const 读取最后任务更新 = (deps: any) => {
+        const 更新任务 = deps.更新NPC生图任务 as unknown as ReturnType<typeof vi.fn>;
+        const 最后调用 = 更新任务.mock.calls.at(-1);
+        expect(最后调用).toBeTruthy();
+        return 最后调用![1]({ id: 'task_1', 状态: 'running' } as any);
+    };
+
+    it('never adds elderly prefix for a young female NPC through the whole workflow', async () => {
+        const npc = {
+            id: 'npc_young_female',
+            姓名: '阿禾',
+            性别: '女',
+            年龄: 18,
+            身份: '客栈侍女',
+            外貌: '容貌清秀，眉眼灵动。',
+            简介: '在客栈长大，性格伶俐。'
+        };
+        const { deps } = 构建NPC生图依赖([npc]);
+        // 模拟真实链路：提取生图基础数据时首判 young_adult，产出含“老妇”字样的约束字段
+        deps.提取NPC生图基础数据 = (source: any) => ({
+            ...source,
+            视觉年龄约束: '真实年龄只代表经历；外貌按青年成年人描写。；不得仅因真实年龄称为老妇、老妪或老太婆。',
+            视觉年龄正向提示词: 'adult, young adult, youthful adult face'
+        });
+
+        await 执行NPC生图工作流(npc, { 构图: '头像', force: true }, deps as any);
+
+        const 任务 = 读取最后任务更新(deps);
+        expect(任务.状态).toBe('success');
+        expect(任务.最终正向提示词).toContain('young adult');
+        expect(任务.最终正向提示词).not.toContain('elderly appearance');
+        expect(任务.最终正向提示词).not.toContain('aged face');
+        expect(任务.性别固定前缀来源).toBe('default');
+    });
+
+    it('uses the configured custom fixed prefix through the whole workflow', async () => {
+        const npc = { id: 'npc_young_female_2', 姓名: '阿菱', 性别: '女', 年龄: 20 };
+        const { deps } = 构建NPC生图依赖([npc]);
+        deps.apiConfig = {
+            功能模型占位: {
+                NPC生图固定前缀自定义_女: '1woman, female, solo focus'
+            }
+        } as any;
+
+        await 执行NPC生图工作流(npc, { 构图: '头像', force: true }, deps as any);
+
+        const 任务 = 读取最后任务更新(deps);
+        expect(任务.最终正向提示词).toContain('1woman, female, solo focus');
+        expect(任务.最终正向提示词).not.toContain('adult woman');
+        expect(任务.性别固定前缀来源).toBe('custom');
     });
 });

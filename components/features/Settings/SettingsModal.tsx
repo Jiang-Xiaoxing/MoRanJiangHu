@@ -1,5 +1,6 @@
 
 import React from 'react';
+import type { VariableReviewActions } from '../../../hooks/useGame/variableReviewActions';
 import { OrnateBorder } from '../../ui/decorations/OrnateBorder';
 import { lazyImportWithReload } from '../../../utils/lazyImportWithReload';
 import { 
@@ -106,6 +107,8 @@ interface Props {
     onUploadNpcImage: (npcId: string, slot: '头像' | '立绘' | '背景' | '胸部' | '小穴' | '屁穴' | '肉棒', payload: { dataUrl: string; fileName?: string }) => Promise<unknown> | unknown;
     onReplaceVariableSection: (section: keyof RuntimeStateSections, value: unknown) => void;
     onApplyVariableCommand: (command: TavernCommand) => void;
+    variableReviewActions?: VariableReviewActions;
+    variableReviewRevision?: unknown;
     onRepairGameInitialTime?: (nextTime: string) => 游戏初始时间修复结果 | Promise<游戏初始时间修复结果>;
     
     onUpdatePrompts: (prompts: 提示词结构[]) => void;
@@ -120,6 +123,7 @@ interface Props {
 
 const SettingsModal: React.FC<Props> = ({ 
     activeTab, onTabChange, onClose,
+    variableReviewActions, variableReviewRevision,
     apiConfig, visualConfig, gameConfig, memoryConfig, prompts, festivals, currentTheme, history, memorySystem, socialList, runtimeState, gameInitialTime, currentGameTime, journeyDayCount, currentStory, openingConfig, contextSnapshot, 当前叙事平静值 = null,
     onSaveApi, onSaveVisual, onSaveGame, onSaveMemory, onDeleteMemory, onRefineMemories, onRegenerateMapFromMemory, onCreateNpc, onSaveNpc, onDeleteNpc, onRestoreNpcBackup, onStartNpcMemorySummary, onUploadNpcImage, onReplaceVariableSection, onApplyVariableCommand, onRepairGameInitialTime, onUpdatePrompts, onUpdateFestivals, onThemeChange,
     onReturnToHome, isHome, returnHomeSaving = false, requestConfirm
@@ -156,10 +160,10 @@ const SettingsModal: React.FC<Props> = ({
         { id: 'theme', label: '界面风格' },
         { id: 'storage', label: '数据存储' }
     ] as const;
-    const diagnosticsEnabled = (gameConfig as any)?.启用研发诊断模式 === true;
-    const visibleTabItems = diagnosticsEnabled
-        ? tabItems
-        : tabItems.filter((item) => !['context', 'history'].includes(item.id));
+    // 「上下文」是排查提示词 / 额外提示词来源的唯一入口，必须始终可见；
+    // 只有偏调试性质的「互动历史」才随研发 / 诊断模式显隐。
+    const visibleTabItems = tabItems.filter((item) => item.id !== 'history'
+        || (gameConfig as any)?.启用研发诊断模式 === true).slice();
     React.useEffect(() => {
         if (!visibleTabItems.some((item) => item.id === activeTab)) {
             onTabChange('game');
@@ -222,6 +226,8 @@ const SettingsModal: React.FC<Props> = ({
                     openingConfig={openingConfig}
                     onReplaceSection={onReplaceVariableSection}
                     onApplyCommand={onApplyVariableCommand}
+                    variableReviewActions={variableReviewActions}
+                    variableReviewRevision={variableReviewRevision}
                 />
             );
         }

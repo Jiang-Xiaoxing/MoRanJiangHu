@@ -203,7 +203,7 @@ describe('NPC old save compatibility', () => {
         expect(list[0].曾用名).toBeUndefined();
     });
 
-    it('does not rewrite generated NPC names locally, even when they look suspicious', () => {
+    it('drops explicit narration pollution without rewriting the remaining role name', () => {
         const list = 规范化社交列表([
             {
                 id: 'npc_bad_name_phrase',
@@ -222,10 +222,9 @@ describe('NPC old save compatibility', () => {
             }
         ], { 合并同名: false });
 
-        expect(list).toHaveLength(2);
-        expect(list[0].姓名).toBe('自己已经没有');
+        expect(list).toHaveLength(1);
+        expect(list[0].姓名).toBe('慕容氏精锐水鬼');
         expect(list[0].曾用名).toBeUndefined();
-        expect(list[1].姓名).toBe('慕容氏精锐水鬼');
     });
 
     it('repairs unknown dialogue NPC basics without forcing a gender guess and keeps private closeups out of avatar selection', () => {

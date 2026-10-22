@@ -17,7 +17,8 @@ import {
     规范化接口设置
 } from '../../../utils/apiConfig';
 import type { 当前可用接口结构 } from '../../../utils/apiConfig';
-import { 请求模型文本, type 通用消息 } from '../../../services/ai/chatCompletionClient';
+import { 协议请求错误, 请求模型文本, type 通用消息 } from '../../../services/ai/chatCompletionClient';
+import { 功能模型建议说明 } from './FunctionModelAdviceTip';
 
 type StageStatus = 'enabled' | 'disabled' | 'fallback' | 'blocked';
 
@@ -609,7 +610,11 @@ const WorkflowGraphSettings: React.FC<{
             const reply = trim(text).replace(/\s+/g, ' ').slice(0, 80) || '无文本回复';
             setStageMessage(stage.id, `测试成功：${elapsed}ms，回复：${reply}`);
         } catch (error: any) {
-            const raw = error?.detail ?? error?.message ?? error ?? '未知错误';
+            // 协议请求错误的 message 是已翻译的中文处置建议（如 401/404），原始详情留在
+            // detail 仅作诊断，因此优先展示 message；其他错误维持原有展示顺序。
+            const raw = error instanceof 协议请求错误
+                ? error.message
+                : error?.detail ?? error?.message ?? error ?? '未知错误';
             const detail = typeof raw === 'string' ? raw : JSON.stringify(raw);
             setStageMessage(stage.id, `测试失败：${detail.slice(0, 240)}`);
         } finally {
@@ -713,11 +718,11 @@ const WorkflowGraphSettings: React.FC<{
         const [showTip, setShowTip] = useState(false);
         return (
             <div className="relative" onMouseEnter={() => setShowTip(true)} onMouseLeave={() => setShowTip(false)}>
-                <span className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-gray-600 bg-black/30 text-[10px] text-gray-400 cursor-help">?</span>
+                <span className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-gray-600 bg-black/30 text-[10px] text-gray-400 cursor-help [html[data-theme='day']_&]:border-gray-400 [html[data-theme='day']_&]:bg-white [html[data-theme='day']_&]:text-gray-600">?</span>
                 {showTip && (
-                    <div className="workflow-stage-tip absolute bottom-full left-1/2 z-50 mb-2 w-56 -translate-x-1/2 rounded-md border border-wuxia-gold/30 bg-gray-950 px-3 py-2 text-[10px] leading-5 text-gray-200 shadow-lg">
+                    <div className="workflow-stage-tip absolute bottom-full left-1/2 z-50 mb-2 w-56 -translate-x-1/2 rounded-md border border-wuxia-gold/30 bg-gray-950 px-3 py-2 text-[10px] leading-5 text-gray-200 shadow-lg [html[data-theme='day']_&]:border-amber-700/30 [html[data-theme='day']_&]:bg-white [html[data-theme='day']_&]:text-gray-700 [html[data-theme='day']_&]:shadow-[0_10px_30px_rgba(0,0,0,0.18)]">
                         {tipText}
-                        <div className="absolute left-1/2 top-full -translate-x-1/2 border-4 border-transparent border-t-gray-950" />
+                        <div className="absolute left-1/2 top-full -translate-x-1/2 border-4 border-transparent border-t-gray-950 [html[data-theme='day']_&]:border-t-white" />
                     </div>
                 )}
             </div>
@@ -736,7 +741,11 @@ const WorkflowGraphSettings: React.FC<{
             <>
             <div className="flex items-start justify-between gap-2">
                 <div>
-                    <div className="text-[13px] font-bold tracking-[0.12em] text-white">{stage.title}</div>
+                    <div className="flex items-center gap-1.5">
+                        <span className="text-[13px] font-bold tracking-[0.12em] text-white">{stage.title}</span>
+                        {/* 「模型配置建议」问号：与下方开关注解（做什么）互补，这里回答该配什么模型 */}
+                        <功能模型建议说明 stageId={stage.id} />
+                    </div>
                     <div className="mt-0.5 text-[10px] text-gray-400">{stage.subtitle}</div>
                 </div>
                 <span className="shrink-0 rounded border border-white/15 bg-black/25 px-1.5 py-0.5 text-[10px] text-current">

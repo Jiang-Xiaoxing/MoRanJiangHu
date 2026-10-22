@@ -1070,7 +1070,7 @@ const ApiSettings: React.FC<Props> = ({ settings, onSave }) => {
                     onClick={() => setTestResultModal((prev) => ({ ...prev, open: false }))}
                 >
                     <div
-                        className="w-full max-w-3xl rounded-lg border border-wuxia-gold/30 bg-black/90 p-5 shadow-[0_0_30px_rgba(0,0,0,0.8)]"
+                        className="min-w-0 w-full max-w-3xl rounded-lg border border-wuxia-gold/30 bg-black/90 p-5 shadow-[0_0_30px_rgba(0,0,0,0.8)]"
                         onClick={(e) => e.stopPropagation()}
                     >
                         <div className="mb-4 flex items-center justify-between gap-4">
@@ -1086,7 +1086,7 @@ const ApiSettings: React.FC<Props> = ({ settings, onSave }) => {
                                 ✕
                             </button>
                         </div>
-                        <div className="max-h-[60vh] overflow-y-auto rounded-md border border-gray-700/80 bg-black/60 p-3 text-xs whitespace-pre-wrap text-gray-200 custom-scrollbar">
+                        <div className="min-w-0 max-w-full max-h-[60vh] overflow-y-auto rounded-md border border-gray-700/80 bg-black/60 p-3 text-xs whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-gray-200 custom-scrollbar">
                             {testResultModal.content}
                         </div>
                         <div className="flex justify-end pt-4">

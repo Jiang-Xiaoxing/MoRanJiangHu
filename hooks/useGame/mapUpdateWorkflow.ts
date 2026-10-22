@@ -7,6 +7,7 @@ import { 地图重生成COT提示词 } from '../../prompts/runtime/mapRegenerate
 import { 请求模型文本, 规范化文本补全消息链 } from '../../services/ai/chatCompletionClient';
 import { recordDiagnosticLog, type DiagnosticLogLevel } from '../../services/diagnosticLog';
 import { 获取繁体输出指令 } from '../../utils/traditionalChinese';
+import { 执行带完整性校验的请求 } from './streamIntegrity';
 
 export type 地图更新模式 = 'memory_regenerate' | 'auto_incremental';
 
@@ -525,37 +526,74 @@ export const 生成地图更新 = async (
     params.signal?.addEventListener('abort', abortRequest, { once: true });
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
     let timedOut = false;
-    const timeoutPromise = new Promise<never>((_, reject) => {
+    const rejectTimeoutRef: { current: ((reason?: any) => void) | null } = { current: null };
+    const 重置为完整预算 = () => {
+        // 降级非流式重试前重新计满：计时器从流式请求发起就开始走，
+        // 流式阶段耗掉的 120 秒预算会让重试几乎必然超时。
+        if (timeoutId) clearTimeout(timeoutId);
         timeoutId = setTimeout(() => {
             timedOut = true;
             requestController.abort(new Error(`地图更新请求超过 ${Math.round(地图更新请求超时毫秒 / 1000)} 秒未返回`));
-            reject(new Error(`地图更新请求超过 ${Math.round(地图更新请求超时毫秒 / 1000)} 秒未返回，已自动跳过本轮地图更新。`));
+            rejectTimeoutRef.current?.(new Error(`地图更新请求超过 ${Math.round(地图更新请求超时毫秒 / 1000)} 秒未返回，已自动跳过本轮地图更新。`));
         }, 地图更新请求超时毫秒);
+    };
+    const timeoutPromise = new Promise<never>((_, reject) => {
+        rejectTimeoutRef.current = reject;
+        重置为完整预算();
     });
 
     let rawText = '';
     try {
         rawText = await Promise.race([
-            请求模型文本(api as 当前可用接口结构, messages, {
-                temperature: params.mode === 'auto_incremental' ? 0.35 : 0.7,
-                signal: requestController.signal,
-                streamOptions: shouldNonStream
-                    ? undefined
-                    : params.onDelta
-                        ? {
-                            stream: true,
-                            onDelta: params.onDelta
-                        }
-                        : undefined,
-                errorDetailLimit: Number.POSITIVE_INFINITY
-            }),
+            (async () => {
+                /**
+                 * 地图命令块被截断后仍可能解析出**部分合法命令**，那样 `commands.length > 0`
+                 * 会判定本轮「更新完成」，玩家看到的是「地图只更新了一半」。
+                 * 这里用统一的流式完整性保护：收到结束标记就照常用，疑似被上游掐断则降级非流式重试一次。
+                 */
+                const 发起地图更新请求 = (streamOptions?: { stream?: boolean; onDelta?: (delta: string, accumulated: string) => void; onStreamEnd?: (info: any) => void }) => (
+                    请求模型文本(api as 当前可用接口结构, messages, {
+                        temperature: params.mode === 'auto_incremental' ? 0.35 : 0.7,
+                        signal: requestController.signal,
+                        streamOptions,
+                        errorDetailLimit: Number.POSITIVE_INFINITY
+                    })
+                );
+                const 完整性结果 = await 执行带完整性校验的请求({
+                    功能名: params.mode === 'memory_regenerate' ? '地图重生成' : '地图更新',
+                    强制非流式: shouldNonStream || !params.onDelta,
+                    // 截断的命令块仍可能解析出部分合法命令，合并后 `commands.length > 0`
+                    // 会把「只更新了一半」判定为成功。重试也失败时整体丢弃，本轮跳过地图更新。
+                    重试失败处置: '抛出错误',
+                    重试前重置超时: 重置为完整预算,
+                    发起流式请求: (streamOptions) => 发起地图更新请求({
+                        stream: true,
+                        onDelta: params.onDelta,
+                        onStreamEnd: streamOptions.onStreamEnd
+                    }),
+                    发起非流式请求: () => 发起地图更新请求(),
+                    onFallback: (info) => {
+                        记录地图更新诊断(info.重试失败 ? 'error' : 'warn', 'stream-truncated-fallback', {
+                            ...baseMeta,
+                            重试失败: Boolean(info.重试失败),
+                            message: info.message || '',
+                            sawDone: info.sawDone,
+                            finishReason: info.finishReason,
+                            accumulatedLength: info.accumulatedLength
+                        });
+                    }
+                });
+                rawText = 完整性结果.结果;
+                记录地图更新诊断('info', 'request-success', {
+                    ...baseMeta,
+                    elapsedMs: Date.now() - startedAt,
+                    rawTextLength: rawText.length,
+                    已降级重试: 完整性结果.已降级重试
+                });
+                return rawText;
+            })(),
             timeoutPromise
         ]);
-        记录地图更新诊断('info', 'request-success', {
-            ...baseMeta,
-            elapsedMs: Date.now() - startedAt,
-            rawTextLength: rawText.length
-        });
     } catch (error: any) {
         if (params.signal?.aborted) {
             记录地图更新诊断('info', 'request-aborted', {

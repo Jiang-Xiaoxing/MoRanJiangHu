@@ -65,6 +65,19 @@
 - `/api/apk/latest.json` showing the new version is NOT sufficient evidence of a website deploy. It is a valid check only for the APK/update-manifest channel, and only after the release-manifest publish step has run.
 - If the static-assets checks above do not pass, the website deployment is INCOMPLETE — re-run `npm run build` + `wrangler deploy` (proxy vars cleared) and re-verify, instead of reporting success.
 
+## APK Black-Screen Gate (CRITICAL — v1.0.674 and v1.0.675 both shipped 100% black-screen APKs)
+
+- **Incident**: both v1.0.674 and v1.0.675 shipped APKs whose `assets/public/index.html` referenced `/workbuddy/resources/vendor/PortableGit/assets/...` instead of `/assets/...`. Every one of those paths is Git Bash's MSYS expansion of the absolute repo path `/f/code/MoRanJiangHu`. All referenced files were absent from the APK, so the main bundle 404'd and the app rendered a blank screen. Players reported "重新下载还是黑屏"; re-downloading could never help because every published copy was broken.
+- **Root cause**: the build ran through Git Bash, and some step let MSYS path conversion rewrite the absolute `--base` path baked into `index.html`. This is not a caching or download problem, so channel-level verification (size/sha256) cannot detect it — the APK is internally consistent and correctly uploaded.
+- **Gate 0 — build-time assertion (fastest, prevents the defect from ever existing)**: `vite.config.ts` rejects any `VITE_BASE_PATH` that looks like a filesystem path (drive letter, backslash, `:digits`, or more than one `/`-separated segment) and **throws, failing the build**. There is no way to produce a polluted APK through the normal build path. Do not remove or loosen this check.
+- **Preferred: `npm run apk:build:release`** — the single command that runs build → asset sync → prune → gradle → APK size sanity check → Gate 1 → Gate 2, and exits non-zero the moment any step fails. Use this instead of assembling the steps by hand. `--skip-gradle` reuses the existing APK for gate-only re-verification.
+- **MANDATORY gate — run before ANY APK upload/deploy**:
+  1. `npm run apk:verify-assets` → must print `PASS`. It fails (exit 1) when `index.html` contains `PortableGit` / `/workbuddy/` paths, or when any referenced local file is missing from the APK.
+  2. `npm run apk:blackscan -- <extracted-assets-public-dir> <label>` → must report `RENDER_OK`. This boots the extracted APK assets in a Pixel 7 WebView-emulating browser and asserts the app actually paints. `BLACKSCREEN` means do not ship.
+- **All three gates must be added to the release checklist. A build that has not passed them is not publishable**, regardless of how successful `gradle`/`wrangler`/the upload steps looked.
+- When either gate fails, do NOT hand-patch the APK. Rebuild with `vite build --base=/` and re-run `npm run build:apk`, and make sure every `robocopy` invocation uses `MSYS2_ARG_CONV_EXCL='*'`.
+- Historical reference: the v1.0.674 fix commit (`c8cc3a9`) only corrected release metadata, NOT the build chain — which is why the same defect shipped again in v1.0.675. The gate above is the actual fix.
+
 ## Worker Functions Rebuild & Live-Behavior Verification Rule (CRITICAL — learned from a stale worker bundle deploy)
 
 - `wrangler deploy`'s success log only means "the upload action finished"; it does NOT mean the part you changed actually became the live response. KV manifest, static-assets bundle, and worker-functions bundle are three independent artifacts, each with its own update path and its own "not rebuilt" trap.
