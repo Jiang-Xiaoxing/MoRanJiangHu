@@ -1,4 +1,4 @@
-﻿import type { 场外对话消息结构, 群聊摘要条目 } from '../../types';
+import type { 场外对话消息结构, 群聊摘要条目 } from '../../types';
 
 /**
  * 群聊记录预算：把「你实际听到的本次群聊」从整段原文改成「最近 N 条原文 + 更早的摘要」。
@@ -33,6 +33,13 @@ export type 群聊记录视图 = {
 export const 取群聊听众键 = (ids: string[]): string =>
     Array.from(new Set(ids.map(id => String(id || '').trim()).filter(Boolean))).sort().join('|');
 
+/**
+ * 补课摘要的独立听众键。
+ * 补课是「这名角色自己没听到」的私有前情，不能挂到共享听众键上：
+ * 同一批听众里的其他角色下轮会把别人的补课当成自己的前情（review 第 2 条）。
+ */
+export const 取补课听众键 = (npcId: string): string => `补课:${String(npcId || '').trim()}`;
+
 const 取文本 = (value: unknown): string => (typeof value === 'string' ? value.trim() : '');
 
 const 取本群消息 = (transcript: 场外对话消息结构[], groupId: string): 场外对话消息结构[] =>
@@ -50,12 +57,16 @@ export const 取可听消息 = (messages: 场外对话消息结构[], npcId: str
 const 摘要属于本群 = (entry: 群聊摘要条目, groupId: string): boolean =>
     !entry.群聊ID || entry.群聊ID === groupId;
 
-const 收集摘要 = (messages: 场外对话消息结构[], 听众键: string, groupId: string): 群聊摘要条目[] =>
+/** 这份摘要是不是这名角色该看到的：共享听众键 + 自己那份补课键。 */
+const 摘要属于本听众 = (entry: 群聊摘要条目, 听众键: string, npcId: string): boolean =>
+    entry.听众键 === 听众键 || (entry.补充课 === true && entry.听众键 === 取补课听众键(npcId));
+
+const 收集摘要 = (messages: 场外对话消息结构[], 听众键: string, groupId: string, npcId: string): 群聊摘要条目[] =>
     messages
         .flatMap(item => Array.isArray(item.群聊摘要) ? item.群聊摘要 : [])
         // 必须同时比对群聊ID：摘要挂在「被摘要的最后一条消息」上，多群并存时
         // 只比听众键会把 A 群的摘要读给 B 群（知情边界泄漏）。
-        .filter(entry => entry.听众键 === 听众键 && 摘要属于本群(entry, groupId))
+        .filter(entry => 摘要属于本听众(entry, 听众键, npcId) && 摘要属于本群(entry, groupId))
         .sort((a, b) => a.覆盖到时间 - b.覆盖到时间);
 
 const 渲染消息 = (messages: 场外对话消息结构[]): string =>
@@ -80,8 +91,9 @@ export const 构建群聊记录视图 = (
     const 可听 = 取可听消息(本群消息, params.npcId);
     const 保留条数 = Math.max(0, params.保留条数 ?? 保留原文条数);
     const 全部摘要 = [
-        ...收集摘要(本群消息, 听众键, params.groupId),
-        ...(params.extraSummaries || []).filter(entry => entry.听众键 === 听众键 && 摘要属于本群(entry, params.groupId))
+        ...收集摘要(本群消息, 听众键, params.groupId, params.npcId),
+        ...(params.extraSummaries || []).filter(entry =>
+            摘要属于本听众(entry, 听众键, params.npcId) && 摘要属于本群(entry, params.groupId))
     ]
         .sort((a, b) => a.覆盖到时间 - b.覆盖到时间);
     const 摘要 = 全部摘要.at(-1);
@@ -89,13 +101,17 @@ export const 构建群聊记录视图 = (
     const 最近原文 = 保留条数 > 0 ? 未被覆盖.slice(-保留条数) : [];
     const 待摘要消息 = 未被覆盖.slice(0, Math.max(0, 未被覆盖.length - 最近原文.length));
 
-    // 中途加入：这个人一条 NPC 发言都没听到过，但群里已经有人说过话 → 用全场公开记录补课。
+    // 中途加入：这个人一条 NPC 发言都没听到过，但群里已经有人说过话 → 用他没听过的公开记录补课。
     // 只听到玩家刚说的那句不算“听过课”，否则新加入者永远拿不到补课。
     const 可听NPC发言数 = 可听.filter(item => item.role === 'npc').length;
+    const 已有本人补课 = 全部摘要.some(entry => entry.补充课 === true);
     const 需要补课 = 可听NPC发言数 === 0
         && 本群消息.some(item => item.role === 'npc')
-        && !全部摘要.some(entry => entry.补充课);
-    const 补课来源 = 需要补课 ? 本群消息.slice(-Math.max(保留条数, 保留原文条数)) : [];
+        && !已有本人补课;
+    // 补课只从未听到的消息里取材：已经听过的那几句再塞进补课摘要，
+    // 等于把同一段对话重复讲两遍（review 第 1 条）。
+    const 未听过 = 本群消息.filter(item => !可听.includes(item));
+    const 补课来源 = 需要补课 ? 未听过.slice(-Math.max(保留条数, 保留原文条数)) : [];
 
     const 摘要块 = 摘要
         ? `${摘要.补充课 ? '（你刚走近，之前的大致经过）' : '（更早的对话已摘要）'}\n${摘要.内容}`
@@ -181,7 +197,12 @@ export const 合并摘要事实 = (旧事实: string[] = [], 新事实: string[]
     for (const raw of [...旧事实, ...新事实]) {
         const text = String(raw || '').trim();
         if (!text) continue;
-        if (结果.some(existed => existed === text || existed.includes(text) || text.includes(existed))) continue;
+        if (结果.some(existed => existed === text)) continue;
+        // 新条目包含旧条目且更长：用新的替换旧的，别把细节丢掉（review #2）。
+        const 旧索引 = 结果.findIndex(existed => text.includes(existed));
+        if (旧索引 >= 0) { 结果[旧索引] = text; continue; }
+        // 旧条目已经覆盖新内容：保留旧的。
+        if (结果.some(existed => existed.includes(text))) continue;
         结果.push(text);
     }
     return 结果.slice(-(摘要事实上限 + 早期事实上限));
