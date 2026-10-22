@@ -2,6 +2,7 @@ import type {
     接口设置结构,
     聊天记录结构,
     场外对话消息结构,
+    群聊摘要条目,
     记忆配置结构,
     提示词结构
 } from '../../types';
@@ -55,6 +56,35 @@ const 取数值 = (value: unknown): number => (typeof value === 'number' && Numb
 
 type 通用消息结构 = { role: 'system' | 'user' | 'assistant'; content: string };
 
+// 群聊摘要挂在消息上，规范化时不能丢，否则每轮都会重新生成摘要（省下的 token 又还回去）。
+const 规范化群聊摘要条目 = (raw: unknown): 群聊摘要条目[] => {
+    if (!Array.isArray(raw)) return [];
+    return raw
+        .map((item: any): 群聊摘要条目 | null => {
+            const 内容 = 取文本(item?.内容);
+            const 听众键 = 取文本(item?.听众键);
+            if (!内容 || !听众键) return null;
+            const 用量 = item?.用量 && typeof item.用量 === 'object' ? {
+                ...(Number.isFinite(Number(item.用量.promptTokens)) ? { promptTokens: Number(item.用量.promptTokens) } : {}),
+                ...(Number.isFinite(Number(item.用量.completionTokens)) ? { completionTokens: Number(item.用量.completionTokens) } : {}),
+                ...(Number.isFinite(Number(item.用量.totalTokens)) ? { totalTokens: Number(item.用量.totalTokens) } : {}),
+                ...(Number.isFinite(Number(item.用量.credit)) ? { credit: Number(item.用量.credit) } : {})
+            } : undefined;
+            return {
+                听众键,
+                覆盖到时间: Number.isFinite(Number(item?.覆盖到时间)) ? Number(item.覆盖到时间) : 0,
+                内容,
+                生成时间: Number.isFinite(Number(item?.生成时间)) ? Number(item.生成时间) : 0,
+                ...(Array.isArray(item?.事实) ? { 事实: item.事实.map(取文本).filter(Boolean) } : {}),
+                ...(Array.isArray(item?.早期事实) ? { 早期事实: item.早期事实.map(取文本).filter(Boolean) } : {}),
+                ...(取文本(item?.概述) ? { 概述: 取文本(item.概述) } : {}),
+                ...(item?.补充课 === true ? { 补充课: true } : {}),
+                ...(用量 && Object.keys(用量).length > 0 ? { 用量 } : {})
+            };
+        })
+        .filter((item): item is 群聊摘要条目 => item !== null);
+};
+
 export const 规范化场外对话列表 = (raw: unknown): 场外对话消息结构[] => {
     if (!Array.isArray(raw)) return [];
     return raw
@@ -68,6 +98,7 @@ export const 规范化场外对话列表 = (raw: unknown): 场外对话消息结
             const 听众NPCIds = Array.isArray(item?.听众NPCIds) ? item.听众NPCIds.map(取文本).filter(Boolean) : [];
             const 听众 = Array.isArray(item?.听众) ? item.听众.map(取文本).filter(Boolean) : [];
             const 完成状态 = item?.完成状态 === 'partial' ? 'partial' : item?.完成状态 === 'complete' ? 'complete' : undefined;
+            const 群聊摘要 = 规范化群聊摘要条目(item?.群聊摘要);
             return {
                 ...(npcId ? { npcId } : {}),
                 ...(会话类型 ? { 会话类型 } : {}),
@@ -75,6 +106,7 @@ export const 规范化场外对话列表 = (raw: unknown): 场外对话消息结
                 ...(听众NPCIds.length > 0 ? { 听众NPCIds: Array.from(new Set(听众NPCIds)) } : {}),
                 ...(听众.length > 0 ? { 听众: Array.from(new Set(听众)) } : {}),
                 ...(完成状态 ? { 完成状态 } : {}),
+                ...(群聊摘要.length > 0 ? { 群聊摘要 } : {}),
                 role,
                 发言人: 取文本(item?.发言人) || (role === 'npc' ? 'NPC' : '玩家'),
                 内容,
