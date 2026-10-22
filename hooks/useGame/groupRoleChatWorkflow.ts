@@ -21,6 +21,7 @@ import {
     拆分摘要事实,
     渲染摘要条目,
     解析摘要输出,
+    取补课听众键,
     需要生成摘要,
     type 群聊记录视图
 } from './groupChatTranscriptBudget';
@@ -216,7 +217,9 @@ export const 纠偏下一位 = (params: {
     const 池 = (其他人.length ? 其他人 : participants.slice());
     const 建议Id = 模型建议 ? 取NPCId(模型建议) : '';
 
-    // 规矩 1：本条发言或玩家刚说的话里点了谁，就让谁接
+    // 规矩 1：本条发言或玩家刚说的话里点了谁，就让谁接。
+    // 这一条**有意**优先于规矩 3 的连说上限：玩家亲口点名时，他的即时意图应当压过轮转均衡。
+    // 连说上限是用来防“演员兼导演式霸麦”的，不是用来违逆玩家指令的（PR #112 review 第 4 条确认）。
     const 被点名 = 找被点名者(池, `${params.最近发言}\n${params.玩家输入}`);
     if (被点名 && 取NPCId(被点名) !== 建议Id) {
         return { next: 被点名, 纠偏: true, 原因: '点名优先' };
@@ -284,13 +287,18 @@ const 生成群聊记录摘要 = async (
     const 旧事实 = [...(view.摘要?.早期事实 || []), ...(view.摘要?.事实 || [])];
     const 合并后 = 合并摘要事实(旧事实, 解析.事实);
     const { 最近, 早期 } = 拆分摘要事实(合并后);
-    const 概述 = 解析.概述 || 取文本(清理角色对话输出(raw));
-    const 内容 = 渲染摘要条目(最近, 概述, 早期) || 取文本(清理角色对话输出(raw));
+    // 只有一条事实都没抽到时，才拿清理后的原文兜底（review 第 3 条）：
+    // 已经抽到事实还塞整段原文当概述，会把 `<事实>` 这类标签也永久写进摘要。
+    const 兜底文本 = 解析.事实.length === 0 ? 取文本(清理角色对话输出(raw)) : '';
+    const 概述 = 解析.概述 || 兜底文本;
+    const 内容 = 渲染摘要条目(最近, 概述, 早期) || 兜底文本;
     const 覆盖到时间 = view.待摘要消息.at(-1)?.时间 ?? 0;
     if (!内容 || !覆盖到时间) return null;
+    // 补课是这名角色自己的私有前情，存到独立听众键下：同听众的其他角色不会把别人的补课当地图（review 第 2 条）。
+    const 听众键 = view.需要补课 ? 取补课听众键(取NPCId(npc)) : view.听众键;
     return {
         群聊ID: view.群聊ID,
-        听众键: view.听众键,
+        听众键,
         覆盖到时间,
         内容,
         生成时间: Date.now(),
@@ -389,6 +397,9 @@ export const 执行角色群聊 = async (deps: 角色对话依赖, params: 角�
     let 调度纠偏次数 = 0;
     const 轮转 = 新建轮转统计();
     const 摘要更新: 群聊摘要条目[] = [];
+    // 本次调用内摘要失败过就不再重试：每轮都去撞同一个失败调用等于每轮白花一次钱；
+    // 失败期间照样退回整段原文，不影发言（review 第 4 条）。
+    let 摘要生成失败 = false;
 
     for (let index = 0; index < limit; index += 1) {
         if (params.signal?.aborted) throw params.signal.reason ?? new DOMException('请求已取消', 'AbortError');
@@ -399,7 +410,7 @@ export const 执行角色群聊 = async (deps: 角色对话依赖, params: 角�
         let 记录文本: string | undefined;
         try {
             let 视图: 群聊记录视图 = 构建群聊记录视图(现有记录, { groupId, npcId, audienceIds, extraSummaries: 摘要更新 });
-            if (需要生成摘要(视图) || 视图.需要补课) {
+            if (!摘要生成失败 && (需要生成摘要(视图) || 视图.需要补课)) {
                 const 条目 = await 生成群聊记录摘要(current, 视图, roleChatApi, params.signal);
                 if (条目) {
                     摘要更新.push(条目);
@@ -408,7 +419,8 @@ export const 执行角色群聊 = async (deps: 角色对话依赖, params: 角�
             }
             记录文本 = 视图.渲染;
         } catch {
-            // 摘要失败不影响发言：退回整段原文。
+            // 摘要失败不影响发言：退回整段原文，并记下失败，本轮不再重试摘要。
+            摘要生成失败 = true;
             记录文本 = undefined;
         }
         const messages = 构建群聊消息序列(deps, current, participants, groupId, 现有记录, { 记录文本 });
