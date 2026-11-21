@@ -92,6 +92,8 @@ type 会话生命周期依赖 = {
     loading: boolean;
     最近开局配置: 最近开局配置结构 | null;
     abortControllerRef: { current: AbortController | null };
+    /** 会话层面重置（新游戏/快速重开/返回首页）时清掉「正文后暂停」挂起的后续步骤 */
+    放弃待继续后续步骤?: () => void;
     ensurePromptsLoaded: () => Promise<提示词结构[]>;
     setView: (value: 'home' | 'game' | 'new_game') => void;
     setPrompts: (value: 提示词结构[]) => void;
@@ -149,14 +151,14 @@ type 会话生命周期依赖 = {
     performAutoSave: (snapshot?: any) => Promise<void>;
     构建系统提示词: (...args: any[]) => any;
     深拷贝: <T>(value: T) => T;
-    processResponseCommands: (response: GameResponse, baseState?: any, options?: { applyState?: boolean }) => any;
+    processResponseCommands: (response: GameResponse, baseState?: any, options?: { applyState?: boolean; 补建缺失装备引用?: boolean }) => any;
     规范化环境信息: (envLike?: any) => any;
     规范化剧情状态: (raw?: any, envLike?: any) => any;
     规范化剧情规划状态: (raw?: any) => any;
     规范化女主剧情规划状态: (raw?: any) => any;
     规范化同人剧情规划状态: (raw?: any) => any;
     规范化同人女主剧情规划状态: (raw?: any) => any;
-    规范化角色物品容器映射: (raw?: any) => any;
+    规范化角色物品容器映射: (raw?: any, options?: any) => any;
     规范化社交列表: (raw?: any[], options?: { 合并同名?: boolean }) => any[];
     规范化世界状态: (raw?: any) => any;
     规范化战斗状态: (raw?: any) => any;
@@ -196,6 +198,7 @@ export const 创建会话生命周期工作流 = (deps: 会话生命周期依赖
     };
 
     const handleStartNewGameWizard = () => {
+        deps.放弃待继续后续步骤?.();
         deps.清空重Roll快照();
         deps.重置自动存档状态();
         清空当前存档生图隔离态();
@@ -329,11 +332,14 @@ export const 创建会话生命周期工作流 = (deps: 会话生命周期依赖
                 应用并同步记忆系统: deps.应用并同步记忆系统,
                 performAutoSave: deps.performAutoSave,
                 构建系统提示词: deps.构建系统提示词,
-                processResponseCommands: deps.processResponseCommands,
+                // 开局首轮：装备栏引用缺失物品时补建最小可用物品，避免「面板有装备、身上背包全空」。
+                processResponseCommands: (response: any, baseState?: any, options?: { applyState?: boolean }) =>
+                    deps.processResponseCommands(response, baseState, { ...options, 补建缺失装备引用: true }),
                 规范化环境信息: deps.规范化环境信息,
                 规范化剧情状态: deps.规范化剧情状态,
                 规范化女主剧情规划状态: (raw: any) => deps.规范化女主剧情规划状态(raw) || ({} as 女主剧情规划结构),
-                规范化角色物品容器映射: deps.规范化角色物品容器映射,
+                规范化角色物品容器映射: (raw?: any, options?: any) =>
+                    deps.规范化角色物品容器映射(raw, { ...options, 补建缺失装备引用: true }),
                 规范化社交列表: deps.规范化社交列表,
                 规范化世界状态: deps.规范化世界状态,
                 规范化战斗状态: deps.规范化战斗状态,
@@ -459,6 +465,7 @@ export const 创建会话生命周期工作流 = (deps: 会话生命周期依赖
     };
 
     const handleReturnToHome = () => {
+        deps.放弃待继续后续步骤?.();
         deps.重置自动存档状态();
         deps.设置最近开局配置(null);
         void deps.清除开局提示词基线();
@@ -470,6 +477,7 @@ export const 创建会话生命周期工作流 = (deps: 会话生命周期依赖
 
     const handleQuickRestart = async (mode: 快速重开模式 = 'all') => {
         if (deps.loading || !deps.最近开局配置) return;
+        deps.放弃待继续后续步骤?.();
         deps.清空重Roll快照();
         deps.重置自动存档状态();
         const worldConfig = deps.深拷贝(deps.最近开局配置.worldConfig);

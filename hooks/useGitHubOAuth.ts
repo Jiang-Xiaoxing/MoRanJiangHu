@@ -6,8 +6,10 @@ import {
     isMissingNativeSyncApiBaseUrl,
     isNativeCapacitorEnvironment
 } from '../utils/nativeRuntime';
+import { isLocalGitHubSite, LOCAL_GITHUB_HEADER, LOCAL_GITHUB_SESSION } from '../utils/localGitHub';
 
 const TOKEN_KEY = 'github_sync_token';
+const LOCAL_DISCONNECTED_KEY = 'moran_local_github_disconnected';
 const OAUTH_STATE_KEY = 'github_oauth_pending_state';
 const GITHUB_OAUTH_AUTHORIZE_URL = 'https://github.com/login/oauth/authorize';
 const GITHUB_OAUTH_SCOPE = 'repo';
@@ -403,9 +405,12 @@ const getWebRedirectUri = (primaryClientId = '', backupClientId = '') => {
 };
 
 export function useGitHubOAuth() {
-    const [token, setToken] = useState<string | null>(() => localStorage.getItem(TOKEN_KEY));
+    const isLocalGitHub = isLocalGitHubSite();
+    const [token, setToken] = useState<string | null>(() => isLocalGitHub ? null : localStorage.getItem(TOKEN_KEY));
     const [isLoggingIn, setIsLoggingIn] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [localGitHubLogin, setLocalGitHubLogin] = useState('');
+    const [localSessionLoading, setLocalSessionLoading] = useState(isLocalGitHub);
     const [oauthSession, setOAuthSession] = useState<GitHubOAuthSessionState>(createIdleOAuthSession);
     const [runtimeConfig, setRuntimeConfig] = useState<GitHubOAuthRuntimeConfig | null>(null);
     const handledCallbackUrlRef = useRef('');
@@ -426,7 +431,7 @@ export function useGitHubOAuth() {
     const nativeDirectRedirectEnabled = isNativeApp && hasNativeGitHubClientId && shouldUseNativeDirectRedirect();
     const oauthClientType: GitHubOAuthClientType = nativeDirectRedirectEnabled ? 'native' : 'web';
     const githubClientId = oauthClientType === 'native' ? nativeGitHubClientId : (webOAuthClient?.clientId || webGitHubClientId);
-    const hasGitHubOAuthClientId = githubClientId.length > 0;
+    const hasGitHubOAuthClientId = isLocalGitHub || githubClientId.length > 0;
     const syncApiBaseUrl = useMemo(() => getSyncApiBaseUrl(), []);
     const missingNativeSyncApiBaseUrl = isNativeApp && isMissingNativeSyncApiBaseUrl();
     const oauthRedirectUri = useMemo(() => {
@@ -441,13 +446,49 @@ export function useGitHubOAuth() {
         setOAuthSession(createIdleOAuthSession());
     }, []);
 
+    const connectLocalGitHub = useCallback(async () => {
+        const response = await fetch('/local-github/status', {
+            headers: { [LOCAL_GITHUB_HEADER]: '1', 'Accept': 'application/json' }
+        });
+        const data = await parseJsonResponse<{ authenticated?: boolean; login?: string; error?: string }>(response);
+        if (!response.ok || !data.authenticated || !data.login) {
+            throw new Error(data.error || '本机 GitHub 未登录，请先运行 gh auth login。');
+        }
+        localStorage.removeItem(LOCAL_DISCONNECTED_KEY);
+        setLocalGitHubLogin(data.login);
+        setToken(LOCAL_GITHUB_SESSION);
+        setError(null);
+    }, []);
+
+    useEffect(() => {
+        if (!isLocalGitHub) return;
+        if (localStorage.getItem(LOCAL_DISCONNECTED_KEY) === '1') {
+            setLocalSessionLoading(false);
+            return;
+        }
+        let cancelled = false;
+        void connectLocalGitHub().catch((failure) => {
+            if (!cancelled) setError(normalizeErrorMessage(failure, '本机 GitHub 登录检查失败'));
+        }).finally(() => {
+            if (!cancelled) setLocalSessionLoading(false);
+        });
+        return () => { cancelled = true; };
+    }, [connectLocalGitHub, isLocalGitHub]);
+
     const logout = useCallback(() => {
+        if (isLocalGitHub) {
+            localStorage.setItem(LOCAL_DISCONNECTED_KEY, '1');
+            setToken(null);
+            setLocalGitHubLogin('');
+            setError(null);
+            return;
+        }
         localStorage.removeItem(TOKEN_KEY);
         clearPendingOAuthState();
         setToken(null);
         setError(null);
         resetOAuthSession();
-    }, [resetOAuthSession]);
+    }, [isLocalGitHub, resetOAuthSession]);
 
     const finishWithToken = useCallback((nextToken: string) => {
         localStorage.setItem(TOKEN_KEY, nextToken);
@@ -624,11 +665,12 @@ export function useGitHubOAuth() {
     }, [bridgeBrowserCallbackToNativeApp, cleanupCallbackUrl, exchangeCodeForToken, finishWithToken, isNativeApp]);
 
     useEffect(() => {
+        if (isLocalGitHub) return;
         void handleOAuthCallback(window.location.href);
-    }, [handleOAuthCallback]);
+    }, [handleOAuthCallback, isLocalGitHub]);
 
     useEffect(() => {
-        if (isNativeApp || buildWebGitHubClientId) {
+        if (isLocalGitHub || isNativeApp || buildWebGitHubClientId) {
             return;
         }
 
@@ -660,7 +702,7 @@ export function useGitHubOAuth() {
         return () => {
             released = true;
         };
-    }, [buildWebGitHubClientId, isNativeApp]);
+    }, [buildWebGitHubClientId, isLocalGitHub, isNativeApp]);
 
     useEffect(() => {
         if (!isNativeApp || !isCapacitorPluginAvailable('App')) return;
@@ -694,6 +736,20 @@ export function useGitHubOAuth() {
 
     const login = useCallback(async () => {
         setError(null);
+
+        if (isLocalGitHub) {
+            setIsLoggingIn(true);
+            try {
+                await connectLocalGitHub();
+            } catch (loginError) {
+                const message = normalizeErrorMessage(loginError, '本机 GitHub 登录检查失败');
+                setError(message);
+                alert(message);
+            } finally {
+                setIsLoggingIn(false);
+            }
+            return;
+        }
 
         if (!githubClientId) {
             const message = isNativeApp
@@ -778,7 +834,7 @@ export function useGitHubOAuth() {
         } finally {
             setIsLoggingIn(false);
         }
-    }, [backupGitHubClientId, githubClientId, isNativeApp, missingNativeSyncApiBaseUrl, oauthClientType, runtimeConfigLoaded, webGitHubClientId]);
+    }, [backupGitHubClientId, connectLocalGitHub, githubClientId, isLocalGitHub, isNativeApp, missingNativeSyncApiBaseUrl, oauthClientType, runtimeConfigLoaded, webGitHubClientId]);
 
     return {
         token,
@@ -788,8 +844,10 @@ export function useGitHubOAuth() {
         logout,
         setError,
         isNativeApp,
+        isLocalGitHub,
+        localGitHubLogin,
         hasGitHubOAuthClientId,
-        isGitHubOAuthConfigLoading: !runtimeConfigLoaded,
+        isGitHubOAuthConfigLoading: isLocalGitHub ? localSessionLoading : !runtimeConfigLoaded,
         oauthSession,
         reopenAuthorizationPage,
         syncApiBaseUrl,

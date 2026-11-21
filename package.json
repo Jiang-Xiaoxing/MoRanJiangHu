@@ -1,7 +1,7 @@
 {
   "name": "墨色江湖---无尽武林",
   "private": true,
-  "version": "1.0.693",
+  "version": "1.0.705",
   "type": "module",
   "scripts": {
     "cnb:sync": "node scripts/cnb-image-backend-sync.mjs",
@@ -49,13 +49,12 @@
     "preset:thumbs:audit": "node scripts/audit-preset-thumbnails.mjs",
     "apk:verify-assets": "node scripts/verify-apk-asset-paths.mjs",
     "apk:blackscan": "node scripts/check-apk-blackscan.mjs",
-    "apk:build:release": "node scripts/build-apk-release.mjs"
+    "apk:build:release": "node scripts/build-apk-release.mjs",
+    "notify:discord": "node scripts/notify-discord.mjs"
   },
   "dependencies": {
-    "@capacitor/android": "^8.3.1",
     "@capacitor/app": "^8.1.0",
     "@capacitor/browser": "^8.0.3",
-    "@capacitor/cli": "^8.3.1",
     "@capacitor/core": "^8.3.1",
     "@capacitor/filesystem": "^8.1.2",
     "@capacitor/share": "^8.0.1",
@@ -68,19 +67,14 @@
   },
   "devDependencies": {
     "@alloc/quick-lru": "^5.2.0",
-    "@playwright/test": "^1.59.1",
-    "@testing-library/react": "^16.3.2",
     "@types/node": "^22.14.0",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.0.0",
     "autoprefixer": "^10.4.27",
-    "jsdom": "^29.1.1",
     "postcss": "^8.5.8",
     "tailwindcss": "^3.4.19",
     "typescript": "~5.8.2",
-    "vite": "^6.2.0",
-    "vitest": "^3.2.4",
-    "wrangler": "^4.94.0"
+    "vite": "^6.2.0"
   }
 }

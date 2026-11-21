@@ -78,6 +78,9 @@ export const GitHubSyncButton: React.FC<GitHubSyncButtonProps> = ({ floating = t
         logout,
         isLoggingIn,
         isNativeApp,
+        isLocalGitHub,
+        localGitHubLogin,
+        error,
         hasGitHubOAuthClientId,
         isGitHubOAuthConfigLoading,
         oauthSession,
@@ -189,7 +192,8 @@ export const GitHubSyncButton: React.FC<GitHubSyncButtonProps> = ({ floating = t
 
     const handleUpload = async () => {
         if (!(await saveRepoBinding())) return;
-        if (!window.confirm('这会把当前本机的全部存档、提示词、世界书、设置与相关素材完整打包上传到 GitHub 私有仓库（界面视觉设置按设备保留），确定继续吗？')) return;
+        if (!window.confirm('这会把当前本机的全部存档、提示词、世界书、设置与相关素材完整打包上传到 GitHub 私有仓库（界面视觉设置按设备保留）。' +
+            (isLocalGitHub ? '\n本机 ComfyUI 地址也在设置中，其他设备恢复后需要重新配置生图接口。' : '') + '\n确定继续吗？')) return;
         setIsSyncing(true);
         setProgress(null);
         try {
@@ -209,7 +213,8 @@ export const GitHubSyncButton: React.FC<GitHubSyncButtonProps> = ({ floating = t
 
     const handleDownload = async () => {
         if (!(await saveRepoBinding())) return;
-        if (!window.confirm('下载会用云端存档完整覆盖当前本地存档、提示词、世界书与设置（界面视觉设置按设备保留），且不可撤销，是否继续？')) return;
+        if (!window.confirm('下载会用云端存档完整覆盖当前本地存档、提示词、世界书与设置（界面视觉设置按设备保留），且不可撤销。' +
+            (isLocalGitHub ? '\n恢复后请检查本机 ComfyUI 接口地址与工作流。' : '') + '\n是否继续？')) return;
         setIsSyncing(true);
         setProgress(null);
         try {
@@ -235,7 +240,8 @@ export const GitHubSyncButton: React.FC<GitHubSyncButtonProps> = ({ floating = t
 
     const handleUploadSettings = async () => {
         if (!(await saveRepoBinding())) return;
-        if (!window.confirm('这只会上传当前本机的全部设置和设置引用的素材，不会上传任何存档，确定继续吗？')) return;
+        if (!window.confirm('这只会上传当前本机的全部设置和设置引用的素材，不会上传任何存档。' +
+            (isLocalGitHub ? '\n本机 ComfyUI 地址也会上传，其他设备恢复后需要重新配置。' : '') + '\n确定继续吗？')) return;
         setIsSyncing(true);
         setProgress(null);
         try {
@@ -255,7 +261,8 @@ export const GitHubSyncButton: React.FC<GitHubSyncButtonProps> = ({ floating = t
 
     const handleDownloadSettings = async () => {
         if (!(await saveRepoBinding())) return;
-        if (!window.confirm('这只会下载云端设置并覆盖当前本机全部设置，不会下载或覆盖任何存档，且不可撤销，是否继续？')) return;
+        if (!window.confirm('这只会下载云端设置并覆盖当前本机全部设置，不会下载或覆盖任何存档，且不可撤销。' +
+            (isLocalGitHub ? '\n恢复后请检查本机 ComfyUI 接口地址与工作流。' : '') + '\n是否继续？')) return;
         setIsSyncing(true);
         setProgress(null);
         try {
@@ -346,7 +353,9 @@ export const GitHubSyncButton: React.FC<GitHubSyncButtonProps> = ({ floating = t
                                     <div className="mb-3 border-b border-[#d8c4a2] pb-3">
                                         <div className="text-lg font-serif font-bold tracking-[0.18em] text-[#7a3f12]">GitHub 云同步</div>
                                         <div className="mt-1 text-xs leading-5 text-[#6f4a26]">
-                                            {isNativeApp
+                                            {isLocalGitHub
+                                                ? '本地网页通过这台电脑已登录的 GitHub 账号同步；访问令牌只由本机服务读取。'
+                                                : isNativeApp
                                                 ? 'APK 现已使用标准 GitHub OAuth，授权完成后会自动回到应用。'
                                                 : '网页端会跳转 GitHub OAuth 完成授权。'}
                                         </div>
@@ -405,15 +414,20 @@ export const GitHubSyncButton: React.FC<GitHubSyncButtonProps> = ({ floating = t
                                     ) : (
                                         <>
                                             <div className="text-sm leading-6 text-[#4f2d16]">
-                                                当前环境会跳转 GitHub 官方授权页，授权完成后自动回到游戏。
+                                                {isLocalGitHub
+                                                    ? '将检查这台电脑的 GitHub 命令行登录状态，不会读取在线站点的浏览器令牌。'
+                                                    : '当前环境会跳转 GitHub 官方授权页，授权完成后自动回到游戏。'}
                                             </div>
-                                            {!hasGitHubOAuthClientId && !isGitHubOAuthConfigLoading && (
+                                            {isLocalGitHub && error && (
+                                                <div className="mt-4 rounded-xl border border-amber-700/30 bg-amber-100/70 p-4 text-sm leading-6 text-[#8a3a12]">{error}</div>
+                                            )}
+                                            {!isLocalGitHub && !hasGitHubOAuthClientId && !isGitHubOAuthConfigLoading && (
                                                 <div className="mt-4 rounded-xl border border-amber-700/30 bg-amber-100/70 p-4 text-sm leading-6 text-[#8a3a12]">
                                                     当前部署没有注入 `VITE_GITHUB_CLIENT_ID`，且 Worker 运行时没有提供 `GITHUB_CLIENT_ID`，网页端 GitHub 登录不可用。
                                                     请在 GitHub Actions Secret 或 Cloudflare Secret 中配置对应 Client ID，然后重新部署。
                                                 </div>
                                             )}
-                                            {!hasGitHubOAuthClientId && isGitHubOAuthConfigLoading && (
+                                            {!isLocalGitHub && !hasGitHubOAuthClientId && isGitHubOAuthConfigLoading && (
                                                 <div className="mt-4 rounded-xl border border-sky-700/20 bg-sky-50/80 p-4 text-sm leading-6 text-sky-900">
                                                     正在读取 GitHub OAuth 运行时配置，请稍候。
                                                 </div>
@@ -424,9 +438,9 @@ export const GitHubSyncButton: React.FC<GitHubSyncButtonProps> = ({ floating = t
                                     <button
                                         type="button"
                                         onClick={() => void login()}
-                                        disabled={!hasGitHubOAuthClientId || isGitHubOAuthConfigLoading}
+                                        disabled={!hasGitHubOAuthClientId || isGitHubOAuthConfigLoading || isLoggingIn}
                                         className={`mt-5 flex w-full items-center justify-center gap-2 rounded-xl border px-4 py-3 text-sm font-semibold tracking-[0.18em] transition-all ${
-                                            !hasGitHubOAuthClientId || isGitHubOAuthConfigLoading
+                                            !hasGitHubOAuthClientId || isGitHubOAuthConfigLoading || isLoggingIn
                                                 ? 'cursor-not-allowed border-[#d8c4a2] bg-[#e8ddca] text-[#9b8b74]'
                                                 : 'border-[#b88a4a]/45 bg-[#fff1d6] text-[#7a3f12] hover:border-[#9a5a1f] hover:bg-[#ffe8b5]'
                                         }`}
@@ -434,7 +448,9 @@ export const GitHubSyncButton: React.FC<GitHubSyncButtonProps> = ({ floating = t
                                         <svg viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4">
                                             <path fillRule="evenodd" clipRule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" />
                                         </svg>
-                                        {isNativeApp ? '开始 GitHub OAuth 登录' : isGitHubOAuthConfigLoading ? '正在读取 GitHub 配置' : hasGitHubOAuthClientId ? '前往 GitHub 授权' : '未配置 GitHub Client ID'}
+                                        {isLocalGitHub
+                                            ? isGitHubOAuthConfigLoading || isLoggingIn ? '正在检查本机 GitHub 登录' : '连接本机 GitHub 账号'
+                                            : isNativeApp ? '开始 GitHub OAuth 登录' : isGitHubOAuthConfigLoading ? '正在读取 GitHub 配置' : hasGitHubOAuthClientId ? '前往 GitHub 授权' : '未配置 GitHub Client ID'}
                                     </button>
                                 </div>
                                 <div className="flex flex-col gap-4">
@@ -450,7 +466,7 @@ export const GitHubSyncButton: React.FC<GitHubSyncButtonProps> = ({ floating = t
                                         <div className="flex flex-col gap-4">
                                         <div className="rounded-2xl border border-[#d8c4a2] bg-[#fffdf6] p-4 shadow-[0_10px_24px_rgba(92,45,10,0.08)]">
                                             <div className="flex items-center justify-between gap-3 border-b border-[#d8c4a2] pb-3">
-                                                <span className="text-[#5f3a1e]">GitHub 授权状态</span>
+                                                <span className="text-[#5f3a1e]">{isLocalGitHub ? `本机 GitHub：${localGitHubLogin}` : 'GitHub 授权状态'}</span>
                                                 <span className="flex items-center gap-2 text-emerald-800">
                                                     <span className="h-2 w-2 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.45)]"></span>
                                                     已登录
@@ -621,13 +637,15 @@ export const GitHubSyncButton: React.FC<GitHubSyncButtonProps> = ({ floating = t
                                     <button
                                         type="button"
                                         onClick={() => {
-                                            if (!window.confirm('这只会清除当前设备保存的 GitHub 令牌，不会删除你的云端仓库，确定退出吗？')) return;
+                                            if (!window.confirm(isLocalGitHub
+                                                ? '这只会断开当前网页的 GitHub 连接，不会退出本机 gh，也不会删除云端仓库。确定断开吗？'
+                                                : '这只会清除当前设备保存的 GitHub 令牌，不会删除你的云端仓库，确定退出吗？')) return;
                                             logout();
                                             setShowPanel(false);
                                         }}
                                         className="w-full rounded-lg border border-red-700/25 bg-red-50 px-4 py-2 text-xs tracking-[0.14em] text-red-700 transition-colors hover:bg-red-100"
                                     >
-                                        解除当前设备上的 GitHub 授权
+                                        {isLocalGitHub ? '断开本地网页的 GitHub 连接' : '解除当前设备上的 GitHub 授权'}
                                     </button>
                                 </div>
                             </>

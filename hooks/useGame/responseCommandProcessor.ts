@@ -36,6 +36,7 @@ import { 自动增加BaseAmount } from '../../services/auctionHouse';
 import { consumeScriptedMoneyDelta, peekScriptedMoneyDelta } from '../../utils/scriptedMoneyReconciler';
 import { 提取金钱命令字段, 同步金钱命令写入 } from './stateTransforms';
 import { 收集在档人物名集合, 校准规划关联人物一致性 } from '../../utils/planningConsistency';
+import { 净化主角姓名命令 } from '../../utils/protagonistNameGuard';
 
 /** 判断是否为具体地点变更命令（多货币汇率系统用） */
 const 是否具体地点变更命令 = (key: string): boolean => {
@@ -282,7 +283,7 @@ export type 响应命令处理依赖 = {
     规范化同人剧情规划状态: (raw?: any) => 同人剧情规划结构 | undefined;
     规范化同人女主剧情规划状态: (raw?: any) => 同人女主剧情规划结构 | undefined;
     规范化角色物品容器映射: (raw?: any, options?: { 当前时间?: unknown; 事件文本?: string; 启用饱腹口渴系统?: boolean; 题材模式?: unknown }) => 角色数据结构;
-    角色规范化选项?: { 启用饱腹口渴系统?: boolean; 题材模式?: unknown };
+    角色规范化选项?: { 启用饱腹口渴系统?: boolean; 题材模式?: unknown; 补建缺失装备引用?: boolean };
     境界配置?: 境界配置;
     战斗结束自动清空: (battle: 战斗状态结构, story?: 剧情系统结构) => 战斗状态结构;
     设置角色?: (value: 角色数据结构) => void;
@@ -1763,6 +1764,8 @@ export const 执行响应命令处理 = (
             let safeCmd: any = cmd;
             // 普通执行与审查共用相同净化步骤；审查额外记录具体拒绝环节。
             const stages: Array<[string, (value: any) => any]> = [
+                // 主角姓名只由玩家决定：AI 静默改名/整对象覆盖冲掉姓名时，丢弃或保留原姓名。
+                ['主角姓名被保护', value => 净化主角姓名命令(value, charBuffer)],
                 ['装备修改缺少正文依据', value => isApprovedEquipmentReviewCommand(value, equipmentReviewMoves) ? value : 净化角色装备命令(value, charBuffer?.装备 || {}, responseFactText)],
                 ['天赋/背景修改缺少正文依据', value => 净化角色天赋背景命令(value, charBuffer)],
                 ['生理字段缺少正文依据', value => 净化社交生理命令(value, responseFactText)],

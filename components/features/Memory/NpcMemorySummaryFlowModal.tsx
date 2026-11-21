@@ -26,6 +26,16 @@ interface Props {
     onBack: () => void;
     onDraftChange: (next: string) => void;
     onApply: () => void;
+    /** 报错时直达接口配置页；未传入则不显示按钮。 */
+    onOpenApiSettings?: () => void;
+    /** 当前真正生效的接口与来源，用于告诉玩家该去哪一页改。 */
+    apiNotice?: {
+        生效描述: string;
+        来源说明: string;
+        按钮文案: string;
+        次要按钮文案?: string;
+        onOpenSecondarySettings?: () => void;
+    };
 }
 
 const NpcMemorySummaryFlowModal: React.FC<Props> = ({
@@ -39,7 +49,9 @@ const NpcMemorySummaryFlowModal: React.FC<Props> = ({
     onCancel,
     onBack,
     onDraftChange,
-    onApply
+    onApply,
+    onOpenApiSettings,
+    apiNotice
 }) => {
     if (!open || !task) return null;
 
@@ -106,6 +118,19 @@ const NpcMemorySummaryFlowModal: React.FC<Props> = ({
                             {error && (
                                 <div className="rounded border border-red-500/30 bg-red-950/20 p-3 text-xs text-red-200 whitespace-pre-wrap">
                                     {error}
+                                    <div className="mt-2 text-[11px] text-red-300/80">
+                                        {apiNotice ? (
+                                            <>
+                                                当前实际生效：<span className="text-red-100">{apiNotice.生效描述}</span>
+                                                <br />
+                                                来源：{apiNotice.来源说明}
+                                                <br />
+                                                多半是这个接口的地址、密钥或模型已失效，去下面这页改即可。
+                                            </>
+                                        ) : (
+                                            '多半是当前记忆总结所用的接口地址、密钥或模型已失效。可点下方「检查接口设置」核对实际生效的渠道。'
+                                        )}
+                                    </div>
                                 </div>
                             )}
 
@@ -117,6 +142,24 @@ const NpcMemorySummaryFlowModal: React.FC<Props> = ({
                             />
 
                             <div className="flex flex-wrap justify-end gap-2">
+                                {error && onOpenApiSettings && (
+                                    <button
+                                        type="button"
+                                        onClick={onOpenApiSettings}
+                                        className="mr-auto px-3 py-2 text-xs rounded border border-wuxia-cyan/50 text-wuxia-cyan hover:bg-wuxia-cyan/10"
+                                    >
+                                        {apiNotice?.按钮文案 || '检查接口设置'}
+                                    </button>
+                                )}
+                                {error && apiNotice?.onOpenSecondarySettings && apiNotice.次要按钮文案 && (
+                                    <button
+                                        type="button"
+                                        onClick={apiNotice.onOpenSecondarySettings}
+                                        className="px-3 py-2 text-xs rounded border border-wuxia-gold/40 text-wuxia-gold hover:bg-wuxia-gold/10"
+                                    >
+                                        {apiNotice.次要按钮文案}
+                                    </button>
+                                )}
                                 <button
                                     type="button"
                                     onClick={onBack}

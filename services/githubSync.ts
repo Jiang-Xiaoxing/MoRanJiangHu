@@ -2,6 +2,7 @@ import { CapacitorHttp } from '@capacitor/core';
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
 import * as dbService from './dbService';
 import { 构建同步API地址, 是否原生Capacitor环境 } from '../utils/nativeRuntime';
+import { isLocalGitHubSite, LOCAL_GITHUB_HEADER, LOCAL_GITHUB_SESSION } from '../utils/localGitHub';
 import { 设置键 } from '../utils/settingsSchema';
 import { 解析图片资源引用ID } from '../utils/imageAssets';
 
@@ -440,6 +441,18 @@ const 二进制转DataUrl = (bytes: Uint8Array, mimeType: string): string => {
 };
 
 const githubFetch = async (token: string, url: string, init?: RequestInit): Promise<Response> => {
+    if (token === LOCAL_GITHUB_SESSION) {
+        if (!isLocalGitHubSite()) throw new Error('本机 GitHub 会话只能在本地网页使用');
+        return fetch('/local-github/api', {
+            method: 'POST',
+            headers: { [LOCAL_GITHUB_HEADER]: '1', 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                url,
+                method: init?.method || 'GET',
+                body: typeof init?.body === 'string' ? init.body : undefined
+            })
+        });
+    }
     return fetch(url, {
         ...init,
         headers: {
@@ -571,7 +584,11 @@ const 仓库API前缀 = ({ owner, repo }: RepoConfig): string => `${GITHUB_API_B
 
 const 确保私有仓库存在 = async (token: string, config: RepoConfig): Promise<void> => {
     const repoRes = await githubFetch(token, 仓库API前缀(config));
-    if (repoRes.ok) return;
+    if (repoRes.ok) {
+        const existing = await repoRes.json();
+        if (existing?.private !== true) throw new Error(`仓库“${config.repo}”不是私有仓库，已停止同步以保护存档。`);
+        return;
+    }
     if (repoRes.status !== 404) {
         const detail = await repoRes.text().catch(() => '');
         throw new Error(`读取私有仓库失败：${repoRes.status}${detail ? ` - ${detail.slice(0, 120)}` : ''}`);
@@ -596,6 +613,17 @@ const 确保私有仓库存在 = async (token: string, config: RepoConfig): Prom
         }
         throw new Error(`创建私有仓库失败：${createRes.status}${detail ? ` - ${detail.slice(0, 160)}` : ''}`);
     }
+    const created = await createRes.json();
+    if (created?.private !== true) throw new Error('GitHub 没有确认新仓库为私有仓库，已停止同步。');
+};
+
+const 读取已有私有仓库Release = async (token: string, config: RepoConfig): Promise<ReleaseInfo | null> => {
+    const repoRes = await githubFetch(token, 仓库API前缀(config));
+    if (repoRes.status === 404) return null;
+    if (!repoRes.ok) throw new Error(`读取私有仓库失败：${repoRes.status}`);
+    const repo = await repoRes.json();
+    if (repo?.private !== true) throw new Error(`仓库“${config.repo}”不是私有仓库，已停止同步以保护存档。`);
+    return 获取Release(token, config);
 };
 
 const 获取Release = async (token: string, config: RepoConfig): Promise<ReleaseInfo | null> => {
@@ -766,6 +794,10 @@ const 删除旧设置云同步附件 = async (token: string, config: RepoConfig,
 };
 
 export const 构建GitHub代理地址 = (path: string): string => {
+    if (isLocalGitHubSite()) {
+        if (path === RELEASE_UPLOAD_PROXY_PATH) return '/local-github/release-upload';
+        if (path === RELEASE_DOWNLOAD_PROXY_PATH) return '/local-github/release-download';
+    }
     const configured = 构建同步API地址(path);
     if (/^https?:\/\//i.test(configured)) return configured;
     if (是否原生Capacitor环境()) {
@@ -775,6 +807,7 @@ export const 构建GitHub代理地址 = (path: string): string => {
 };
 
 export const 构建GitHub代理地址列表 = (path: string): string[] => {
+    if (isLocalGitHubSite()) return [构建GitHub代理地址(path)];
     const primary = 构建GitHub代理地址(path);
     const candidates = [primary, `${PRIMARY_SYNC_API_BASE}${path}`, `${BACKUP_SYNC_API_BASE}${path}`];
     return Array.from(new Set(candidates.filter(Boolean)));
@@ -792,7 +825,8 @@ const 使用XHR上传附件 = (
     xhr.responseType = 'text';
     xhr.timeout = 单分卷上传超时毫秒;
     xhr.setRequestHeader('Content-Type', contentType);
-    xhr.setRequestHeader('X-GitHub-Token', token);
+    if (token === LOCAL_GITHUB_SESSION) xhr.setRequestHeader(LOCAL_GITHUB_HEADER, '1');
+    else xhr.setRequestHeader('X-GitHub-Token', token);
     xhr.setRequestHeader('X-GitHub-Upload-Url', uploadUrl);
 
     xhr.upload.onprogress = (event) => {
@@ -851,7 +885,7 @@ const 执行Release附件上传 = async (
         method: 'POST',
         headers: {
             'Content-Type': contentType,
-            'X-GitHub-Token': token,
+            ...(token === LOCAL_GITHUB_SESSION ? { [LOCAL_GITHUB_HEADER]: '1' } : { 'X-GitHub-Token': token }),
             'X-GitHub-Upload-Url': uploadUrl
         },
         body
@@ -901,7 +935,7 @@ const 下载Release附件二进制 = async (token: string, url: string): Promise
 const 通过代理下载Release附件 = async (token: string, url: string, requestUrl: string): Promise<下载附件结果> => {
     const requestHeaders = {
         'Content-Type': 'application/json',
-        'X-GitHub-Token': token,
+        ...(token === LOCAL_GITHUB_SESSION ? { [LOCAL_GITHUB_HEADER]: '1' } : { 'X-GitHub-Token': token }),
         'X-GitHub-Download-Url': url
     };
 
@@ -1543,14 +1577,13 @@ export async function fetchSyncMetaData(token: string, preferredRepo?: string): 
             setBoundRepoConfig(preferredRepo);
         }
         const config = await 获取仓库配置(token);
-        await 确保私有仓库存在(token, config);
-        const release = await 确保Release存在(token, config);
+        const release = await 读取已有私有仓库Release(token, config);
         const manifestAsset = 查找分卷清单附件(release);
         const partAssets = 查找分卷附件列表(release);
         return {
             exists: Boolean(manifestAsset) && partAssets.length > 0,
             updatedAt: 读取文本(manifestAsset?.updated_at) || 读取文本(partAssets[0]?.updated_at) || null,
-            url: 读取文本(release?.html_url) || 获取仓库URL(config)
+            url: release ? 读取文本(release.html_url) || 获取仓库URL(config) : null
         };
     } catch {
         return { exists: false, updatedAt: null, url: null };
@@ -1563,13 +1596,12 @@ export async function fetchSettingsSyncMetaData(token: string, preferredRepo?: s
             setBoundRepoConfig(preferredRepo);
         }
         const config = await 获取仓库配置(token);
-        await 确保私有仓库存在(token, config);
-        const release = await 确保Release存在(token, config);
+        const release = await 读取已有私有仓库Release(token, config);
         const settingsAsset = 查找设置云同步附件(release);
         return {
             exists: Boolean(settingsAsset),
             updatedAt: 读取文本(settingsAsset?.updated_at) || null,
-            url: 读取文本(release?.html_url) || 获取仓库URL(config)
+            url: release ? 读取文本(release.html_url) || 获取仓库URL(config) : null
         };
     } catch {
         return { exists: false, updatedAt: null, url: null };
@@ -1725,8 +1757,8 @@ export async function uploadSettingsToCloud(token: string, onProgress?: 云同�
 export async function downloadFromCloud(token: string, onProgress?: 云同步进度回调): Promise<云同步恢复结果> {
     const emit = 创建进度发射器(onProgress);
     const config = await 获取仓库配置(token);
-    await 确保私有仓库存在(token, config);
-    const release = await 确保Release存在(token, config);
+    const release = await 读取已有私有仓库Release(token, config);
+    if (!release) throw new Error('该私有仓库还没有云存档，请先从有存档的设备上传。');
     const manifestAsset = 查找分卷清单附件(release);
     const manifestUrl = 读取文本(manifestAsset?.url) || 读取文本(manifestAsset?.browser_download_url);
     if (!manifestAsset || !manifestUrl) {
@@ -1802,8 +1834,8 @@ export async function downloadFromCloud(token: string, onProgress?: 云同步进
 export async function downloadSettingsFromCloud(token: string, onProgress?: 云同步进度回调): Promise<云同步恢复结果> {
     const emit = 创建进度发射器(onProgress);
     const config = await 获取仓库配置(token);
-    await 确保私有仓库存在(token, config);
-    const release = await 确保Release存在(token, config);
+    const release = await 读取已有私有仓库Release(token, config);
+    if (!release) throw new Error('该私有仓库还没有云端设置，请先从有设置的设备上传。');
     const settingsPackage = 查找设置云同步下载地址(release);
     if (!settingsPackage) {
         throw new Error('未在私有仓库 Release 中找到云端设置包，请先上传一次设置。');

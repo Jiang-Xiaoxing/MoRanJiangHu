@@ -6,6 +6,7 @@ android/app/build/
 /dist/
 /dist-ssr/
 /coverage/
+/local-logs/
 *.tsbuildinfo
 /output/
 /.tmp-release-assets/
@@ -150,3 +151,6 @@ Desktop.ini
 /.release-repo-*/
 /dist-prev-*/
 playwright.config.tmp-*.mjs
+
+# Discord 发版通知去重状态（本地生成）
+.discord-notify-state.json

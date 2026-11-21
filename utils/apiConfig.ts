@@ -21,6 +21,7 @@
 import { 加载并展开货币系统 } from './currencySystemLoader';
 import { 中转可用, 构建AI中转地址 } from '../services/ai/corsRelay';
 import { 默认ComfyUI工作流JSON, 默认NSFWComfyUI工作流JSON } from '../data/defaultComfyWorkflow';
+import 本地MoodyKrea2工作流JSON from '../data/localMoodyKrea2Workflow.json?raw';
 import { 默认文章优化提示词, 默认角色对话提示词 } from '../prompts/runtime/defaults';
 import {
     fetchDiscoveredImageBackends,
@@ -768,6 +769,9 @@ const 默认模型词组转化器预设列表: 模型词组转化器预设结构
     }
 ];
 
+const 使用本地MoodyKrea2预设 = typeof window !== 'undefined'
+    && window.location.origin === 'http://127.0.0.1:3000';
+
 export const 默认功能模型占位: 功能模型占位配置结构 = {
     主剧情使用模型: '',
     DeepSeek稳定模型救场开关: false,
@@ -878,16 +882,16 @@ export const 默认功能模型占位: 功能模型占位配置结构 = {
     小说拆分主剧情字数优化: true,
     小说拆分主剧情注入上限: 1200,
     小说拆分详细注入上限: 4000,
-    文生图功能启用: false,
+    文生图功能启用: 使用本地MoodyKrea2预设,
     文生图后端类型: 'comfyui',
     文生图模型使用模型: '',
-    文生图模型API地址: '',
+    文生图模型API地址: 使用本地MoodyKrea2预设 ? 'http://127.0.0.1:3000/local-comfy' : '',
     文生图模型API密钥: '',
     图片后端注册表地址: '',
     图片后端自动连接口令: '',
     当前图片后端发现ID: '',
-    使用默认ComfyUI工作流: true,
-    ComfyUI工作流JSON: '',
+    使用默认ComfyUI工作流: !使用本地MoodyKrea2预设,
+    ComfyUI工作流JSON: 使用本地MoodyKrea2预设 ? 本地MoodyKrea2工作流JSON : '',
     场景生图独立接口启用: false,
     场景生图后端类型: 'openai',
     场景生图模型使用模型: '',
@@ -896,14 +900,14 @@ export const 默认功能模型占位: 功能模型占位配置结构 = {
     当前场景图片后端发现ID: '',
     使用默认场景ComfyUI工作流: true,
     场景ComfyUI工作流JSON: '',
-    NSFW生图独立接口启用: false,
+    NSFW生图独立接口启用: 使用本地MoodyKrea2预设,
     NSFW生图后端类型: 'comfyui',
     NSFW生图模型使用模型: '',
-    NSFW生图模型API地址: '',
+    NSFW生图模型API地址: 使用本地MoodyKrea2预设 ? 'http://127.0.0.1:3000/local-comfy' : '',
     NSFW生图模型API密钥: '',
     当前NSFW图片后端发现ID: '',
-    使用默认NSFWComfyUI工作流: true,
-    NSFWComfyUI工作流JSON: '',
+    使用默认NSFWComfyUI工作流: !使用本地MoodyKrea2预设,
+    NSFWComfyUI工作流JSON: 使用本地MoodyKrea2预设 ? 本地MoodyKrea2工作流JSON : '',
     文生图接口路径模式: 'preset',
     文生图预设接口路径: 'comfyui_prompt',
     文生图接口路径: '',
@@ -1422,6 +1426,7 @@ const 标准化单配置 = (raw: any, index: number): 单接口配置结构 => {
     const temperature = 读取温度值(raw?.temperature);
     const topP = 读取TopP值(raw?.topP ?? raw?.top_p);
     const 协议覆盖 = 标准化协议覆盖(raw?.协议覆盖 ?? raw?.protocolOverride);
+    const 自定义请求头 = 读取字符串(raw?.自定义请求头 ?? raw?.customHeaders).trim();
 
     const createdAt = typeof raw?.createdAt === 'number' && Number.isFinite(raw.createdAt) ? raw.createdAt : now;
     const updatedAt = typeof raw?.updatedAt === 'number' && Number.isFinite(raw.updatedAt) ? raw.updatedAt : now;
@@ -1435,6 +1440,7 @@ const 标准化单配置 = (raw: any, index: number): 单接口配置结构 => {
         baseUrl,
         apiKey,
         model,
+        自定义请求头,
         maxTokens,
         temperature,
         topP,
@@ -1819,6 +1825,7 @@ export const 创建接口配置模板 = (
             : preset.baseUrl,
         apiKey: '',
         model: preset.model,
+        自定义请求头: '',
         maxTokens: undefined,
         temperature: undefined,
         topP: undefined,
@@ -1882,7 +1889,7 @@ export const 写入接口设置本地镜像 = (settings: 接口设置结构): vo
     }
 };
 
-export type 当前可用接口结构 = Pick<单接口配置结构, 'id' | '名称' | '供应商' | '协议覆盖' | 'baseUrl' | 'apiKey' | 'model' | 'maxTokens' | 'temperature' | 'topP'> & {
+export type 当前可用接口结构 = Pick<单接口配置结构, 'id' | '名称' | '供应商' | '协议覆盖' | 'baseUrl' | 'apiKey' | 'model' | '自定义请求头' | 'maxTokens' | 'temperature' | 'topP'> & {
     图片后端类型?: 功能模型占位配置结构['文生图后端类型'];
     图片接口路径?: string;
     图片需要代理?: boolean;
@@ -2104,6 +2111,7 @@ export const 获取当前接口配置 = (settings: 接口设置结构): 当前�
         baseUrl: active.baseUrl,
         apiKey: active.apiKey,
         model: active.model,
+        自定义请求头: active.自定义请求头,
         maxTokens: active.maxTokens,
         temperature: active.temperature,
         topP: active.topP
@@ -2202,6 +2210,91 @@ export const 获取记忆总结接口配置 = (settings: 接口设置结构): �
         API地址: feature?.记忆总结API地址,
         API密钥: feature?.记忆总结API密钥
     });
+};
+
+export type 记忆总结生效来源 = 'independent' | 'independent-mixed' | 'recall' | 'primary';
+
+export interface 记忆总结生效接口解析结果 {
+    /** 真正会发请求的接口（始终与 获取记忆总结接口配置 完全一致，含模型/密钥覆盖值）。 */
+    配置: 当前可用接口结构 | null;
+    来源: 记忆总结生效来源;
+    来源说明: string;
+    设置页: 'memory_summary_model' | 'recall' | 'api';
+    设置页名称: string;
+    跳转文案: string;
+    /** 混合配置（地址来自主配置、模型/密钥用独立覆盖值）时，额外给一个改地址的入口。 */
+    次要设置页?: 'api';
+    次要跳转文案?: string;
+}
+
+/**
+ * 解析「NPC 记忆总结」实际生效的接口与来源。
+ *
+ * 关键原则：`配置` 永远取自 `获取记忆总结接口配置`，与真实请求逐字段一致；
+ * `来源` 只负责回答「该去哪一页改」，不能反过来影响 `配置`。
+ *
+ * 记忆总结的真实链路：
+ * 1. 独立开关关闭 → 剧情回忆可用则跟随它，否则回退主配置；
+ * 2. 独立开关开启 → 只用独立配置，**不会**再读剧情回忆；
+ *    其中渠道被删且没填独立地址时，地址沿用主配置，但模型/密钥仍用独立覆盖值。
+ *    这种混合配置下，换主渠道未必能修好（可能是独立模型名失效），所以两个入口都要给。
+ */
+export const 解析记忆总结生效接口 = (settings: 接口设置结构): 记忆总结生效接口解析结果 => {
+    const feature = (settings as any)?.功能模型占位;
+    const 配置 = 获取记忆总结接口配置(settings);
+
+    if (Boolean(feature?.记忆总结独立模型开关)) {
+        const 渠道ID = typeof feature?.记忆总结渠道ID === 'string' ? feature.记忆总结渠道ID.trim() : '';
+        const 独立地址 = typeof feature?.记忆总结API地址 === 'string' ? feature.记忆总结API地址.trim() : '';
+        const 渠道存在 = Boolean(渠道ID)
+            && Array.isArray(settings?.configs)
+            && settings.configs.some((item) => item?.id === 渠道ID);
+
+        if (渠道存在 || 独立地址) {
+            return {
+                配置,
+                来源: 'independent',
+                来源说明: '「记忆总结」独立配置',
+                设置页: 'memory_summary_model',
+                设置页名称: '记忆总结',
+                跳转文案: '检查记忆总结设置'
+            };
+        }
+
+        // 渠道已删除、又没填独立地址：请求地址来自主配置，但模型/密钥仍是独立覆盖值。
+        // 只跳「接口连接」会让玩家改不动失效的模型名，因此主入口仍给「记忆总结」，
+        // 同时补一个改地址的次要入口。
+        return {
+            配置,
+            来源: 'independent-mixed',
+            来源说明: '「记忆总结」独立模型（地址沿用主配置，模型/密钥仍用独立设置）',
+            设置页: 'memory_summary_model',
+            设置页名称: '记忆总结',
+            跳转文案: '检查记忆总结设置',
+            次要设置页: 'api',
+            次要跳转文案: '检查主接口地址'
+        };
+    }
+
+    const recallConfig = 获取剧情回忆接口配置(settings);
+    if (接口配置是否可用(recallConfig)) {
+        return {
+            配置,
+            来源: 'recall',
+            来源说明: '「剧情回忆」配置（记忆总结未开独立模型时跟随其后）',
+            设置页: 'recall',
+            设置页名称: '剧情回忆',
+            跳转文案: '检查剧情回忆接口'
+        };
+    }
+    return {
+        配置,
+        来源: 'primary',
+        来源说明: '当前启用接口（主配置）',
+        设置页: 'api',
+        设置页名称: '接口连接',
+        跳转文案: '检查主接口配置'
+    };
 };
 
 export const 获取记忆精炼接口配置 = (settings: 接口设置结构): 当前可用接口结构 | null => {

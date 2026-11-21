@@ -1505,7 +1505,10 @@ export const useGame = () => {
     };
 
     const handleCancelNpcMemorySummary = () => {
-        清空NPC记忆总结流程({ 保留队列: true });
+        // 关闭报错弹窗不等于问题已解决：队列和「上次失败原因」都要保留，
+        // 否则玩家在「设置 → NPC管理」里看不到任何线索，也找不到再次触发的入口。
+        setNPC记忆总结阶段('idle');
+        setNPC记忆总结草稿('');
     };
 
     const handleBackToNpcMemorySummaryRemind = () => {
@@ -3298,9 +3301,12 @@ export const useGame = () => {
 
     const 应用开场基态 = (openingBase: ReturnType<typeof 创建开场基础状态>) => {
         最近开场基态时间Ref.current = Date.now();
+        // 开局基态可能带着建档里的初始装备引用，但物品列表尚未落地；
+        // 这里同样允许补建，避免建档初始装备在任何后续规范化里被清成「无」。
         设置角色(规范化角色物品容器映射(openingBase.角色, {
             启用饱腹口渴系统: gameConfig?.启用饱腹口渴系统,
-            题材模式: 开局配置?.题材模式
+            题材模式: 开局配置?.题材模式,
+            补建缺失装备引用: true
         }));
         设置环境(规范化环境信息(openingBase.环境));
         设置游戏初始时间(openingBase.游戏初始时间 || '');
@@ -3380,6 +3386,8 @@ export const useGame = () => {
         options?: {
             applyState?: boolean;
             heroinePlanEnabled?: boolean;
+            /** 开局首轮初始化专用：装备引用缺失物品时补建最小可用物品，避免装备凭空消失。 */
+            补建缺失装备引用?: boolean;
         }
     ) => {
         const normalizedRuntimeConfig = 规范化游戏设置(gameConfig);
@@ -3417,7 +3425,8 @@ export const useGame = () => {
                 规范化角色物品容器映射,
                 角色规范化选项: {
                     启用饱腹口渴系统: gameConfig?.启用饱腹口渴系统,
-                    题材模式: 开局配置?.题材模式
+                    题材模式: 开局配置?.题材模式,
+                    补建缺失装备引用: options?.补建缺失装备引用 === true
                 },
                 境界配置: 获取境界配置(开局配置?.题材模式, 开局配置?.modeRuntimeProfile),
                 战斗结束自动清空,
@@ -3439,7 +3448,8 @@ export const useGame = () => {
                         ...state,
                         角色: 规范化角色物品容器映射(state.角色 || 角色, {
                             启用饱腹口渴系统: gameConfig?.启用饱腹口渴系统,
-                            题材模式: 开局配置?.题材模式
+                            题材模式: 开局配置?.题材模式,
+                            补建缺失装备引用: true
                         })
                     });
                     const 修复开局伙伴 = (state: typeof nextState): typeof nextState => ({
@@ -3466,7 +3476,8 @@ export const useGame = () => {
                         规范化角色物品容器映射: (raw?: any, calibrationOptions?: any) => 规范化角色物品容器映射(raw, {
                             ...calibrationOptions,
                             启用饱腹口渴系统: gameConfig?.启用饱腹口渴系统,
-                            题材模式: 开局配置?.题材模式
+                            题材模式: 开局配置?.题材模式,
+                            补建缺失装备引用: true
                         })
                     });
                     return {
@@ -3761,6 +3772,7 @@ export const useGame = () => {
     执行重解析变量生成委托 = 执行重解析变量生成;
 
     const handleStop = () => {
+        放弃待继续后续步骤();
         if (abortControllerRef.current) {
             abortControllerRef.current.abort();
         }
@@ -3851,12 +3863,91 @@ export const useGame = () => {
         return nextSnapshot;
     };
 
+    // --- 正文后暂停后续步骤（省额度模式）---
+    // 玩家确认正文质量后再手动点「继续执行后续步骤」，避免不满意重ROLL 时连锁消耗变量/世界/规划/地图的额度。
+    const [待继续后续步骤, set待继续后续步骤] = useState<{ 阶段摘要: string[]; 回合标识: number; 注册时间: number } | null>(null);
+    const 待继续后续步骤执行Ref = useRef<null | (() => Promise<void>)>(null);
+    // 暂停续跑要读「玩家点击继续那一刻」的最新状态，而不是发送回合时的闭包快照。
+    // 每次渲染同步一次引用（不深拷贝），续跑时再拷贝，避免暂停期间的改动被旧快照覆盖。
+    const 最新回合基线Ref = useRef<null | {
+        角色: 角色数据结构;
+        环境: any;
+        社交: any[];
+        世界: any;
+        战斗: any;
+        玩家门派: any;
+        任务列表: any[];
+        约定列表: any[];
+        剧情: 剧情系统结构;
+        女主剧情规划?: 女主剧情规划结构;
+        历史记录: 聊天记录结构[];
+    }>(null);
+    最新回合基线Ref.current = {
+        角色,
+        环境,
+        社交,
+        世界,
+        战斗,
+        玩家门派,
+        任务列表,
+        约定列表,
+        剧情,
+        女主剧情规划,
+        历史记录
+    };
+
+    const 放弃待继续后续步骤 = () => {
+        待继续后续步骤执行Ref.current = null;
+        set待继续后续步骤(null);
+    };
+
+    const 注册待继续后续步骤 = (payload: { 阶段摘要: string[]; 回合标识?: number; 执行: () => Promise<void> }) => {
+        待继续后续步骤执行Ref.current = payload.执行;
+        set待继续后续步骤({
+            阶段摘要: Array.isArray(payload.阶段摘要) ? [...payload.阶段摘要] : [],
+            回合标识: Number(payload.回合标识) || 0,
+            注册时间: Date.now()
+        });
+    };
+
+    const 继续执行后续步骤 = async () => {
+        const 执行 = 待继续后续步骤执行Ref.current;
+        if (!执行) {
+            set待继续后续步骤(null);
+            return;
+        }
+        // 兜底：暂停期间若发生过回档/读档/快速重开，历史记录的最后一轮已经不是注册时那一回合，
+        // 此时旧闭包里的状态快照已经和新状态对不上，直接丢弃比把旧命令叠上去安全。
+        const 当前回合标识 = (() => {
+            for (let i = 历史记录.length - 1; i >= 0; i -= 1) {
+                const item = 历史记录[i];
+                if (item?.role === 'assistant') return Number(item.timestamp) || 0;
+            }
+            return 0;
+        })();
+        const 注册回合标识 = Number(待继续后续步骤?.回合标识) || 0;
+        待继续后续步骤执行Ref.current = null;
+        set待继续后续步骤(null);
+        // 只要注册时的回合标识对不上（包括历史被清空导致当前标识为 0），就丢弃续跑：
+        // 旧闭包里的状态快照已经和新局面对不上，执行只会把上一局的命令叠到当前状态上。
+        if (!注册回合标识 || 注册回合标识 !== 当前回合标识) {
+            推送右下角提示({
+                title: '后续步骤已取消',
+                message: '上一回合已被回档或读档，本次未执行的后续步骤已失效。',
+                tone: 'info'
+            });
+            return;
+        }
+        await 执行();
+    };
+
     // --- Core Send Logic ---
     const handleSend = async (
         content: string,
         isStreaming: boolean = true,
         options?: 发送选项
     ): Promise<发送结果> => {
+        放弃待继续后续步骤();
         // 主行动优先：先使正在进行的侧聊结果失效，避免迟到回复落入本次主回合快照。
         终止当前角色对话(true);
         set开局主剧情进度(null);
@@ -3909,6 +4000,27 @@ export const useGame = () => {
                 前台发送序号Ref,
                 setLoading,
                 set后台队列处理中,
+                注册待继续后续步骤,
+                获取续跑状态快照: () => {
+                    const latest = 最新回合基线Ref.current;
+                    if (!latest) return null;
+                    return {
+                        命令基线: {
+                            角色: 深拷贝(latest.角色),
+                            环境: 深拷贝(latest.环境),
+                            社交: 深拷贝(latest.社交),
+                            世界: 深拷贝(latest.世界),
+                            战斗: 深拷贝(latest.战斗),
+                            玩家门派: 深拷贝(latest.玩家门派),
+                            任务列表: 深拷贝(latest.任务列表),
+                            约定列表: 深拷贝(latest.约定列表),
+                            剧情: 深拷贝(latest.剧情),
+                            女主剧情规划: 深拷贝(latest.女主剧情规划)
+                        },
+                        历史: 深拷贝(latest.历史记录),
+                        场外对话: 深拷贝(场外对话Ref.current || [])
+                    };
+                },
                 setShowSettings,
                 设置剧情,
                 设置历史记录,
@@ -4011,6 +4123,7 @@ export const useGame = () => {
     const 存档格式版本 = 3;
     const 自动存档最小间隔毫秒 = 30000;
     const 重置读档瞬态状态 = () => {
+        放弃待继续后续步骤();
         自动记忆总结暂停Ref.current = true;
         清空变量生成上下文缓存();
         世界演变进行中Ref.current = false;
@@ -4185,6 +4298,7 @@ export const useGame = () => {
         loading,
         最近开局配置,
         abortControllerRef,
+        放弃待继续后续步骤,
         ensurePromptsLoaded,
         setView,
         setPrompts,
@@ -4313,7 +4427,7 @@ export const useGame = () => {
         获取环境: () => 环境,
         环境时间转标准串,
         规范化社交列表: 规范化社交列表安全,
-        设置社交,
+        设置社交: 同步设置社交,
         获取玩家门派: () => 玩家门派,
         设置玩家门派,
         执行社交自动存档: (socialSnapshot, sectSnapshot) => {
@@ -4582,6 +4696,7 @@ export const useGame = () => {
             variableGenerationRunning: 变量生成中,
             variableReviewRevision,
             postStoryQueueRunning: 后台队列处理中,
+            pendingPostStoryQueue: 待继续后续步骤,
             openingMainStoryProgress: 开局主剧情进度,
             openingPolishProgress: 开局文章优化进度,
             openingWorldEvolutionProgress: 开局世界演变进度,
@@ -4608,7 +4723,13 @@ export const useGame = () => {
             handleSend,
             handleStop,
             handleCancelVariableGeneration,
-            handleRegenerate,
+            handleContinuePostStoryQueue: 继续执行后续步骤,
+            handleAbandonPostStoryQueue: 放弃待继续后续步骤,
+            // 重ROLL 会回档到本回合之前，挂起的后续步骤必须一起丢弃，否则旧命令会叠到回档后的状态上。
+            handleRegenerate: async () => {
+                放弃待继续后续步骤();
+                return handleRegenerate();
+            },
             handleRetryLatestVariableGeneration,
             handleRetryLatestStage,
             handlePolishTurn,

@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { defineConfig, loadEnv, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
+import { localGitHubSyncPlugin } from './localGitHubSyncPlugin';
 
 const 读取请求体 = async (req: NodeJS.ReadableStream): Promise<Buffer> => {
   const chunks: Buffer[] = [];
@@ -415,9 +416,98 @@ const handleComfyUiProxyRequest = async (
   }
 };
 
+// This local-only route lets the site and ComfyUI share an origin in the browser.
+// It has a fixed loopback target and exposes only the endpoints used for text-to-image.
+const handleLocalComfyUiRequest = async (
+  req: any,
+  res: any,
+  logger: { error: (message: string) => void }
+) => {
+  const siteOrigin = 'http://127.0.0.1:3000';
+  const host = String(req.headers.host || '').toLowerCase();
+  const origin = String(req.headers.origin || '');
+  const referer = String(req.headers.referer || '');
+  const fetchSite = String(req.headers['sec-fetch-site'] || '');
+  if (host !== '127.0.0.1:3000'
+      || (origin && origin !== siteOrigin)
+      || (referer && !referer.startsWith(`${siteOrigin}/`))
+      || (fetchSite && !['same-origin', 'none'].includes(fetchSite))) {
+    res.statusCode = 403;
+    res.end('Forbidden');
+    return;
+  }
+
+  const method = String(req.method || 'GET').toUpperCase();
+  const rawPath = String(req.url || '/');
+  if (!rawPath.startsWith('/') || rawPath.startsWith('//')) {
+    res.statusCode = 400;
+    res.end('Invalid ComfyUI path');
+    return;
+  }
+  const parsedUrl = new URL(rawPath, 'http://local-request.invalid');
+  const path = parsedUrl.pathname;
+  const allowed = (method === 'GET' && (
+    path === '/system_stats'
+    || path === '/view'
+    || /^\/history\/[0-9a-f-]{32,40}$/i.test(path)
+  )) || (method === 'POST' && path === '/prompt');
+  if (!allowed) {
+    res.statusCode = 404;
+    res.end('Unsupported ComfyUI path');
+    return;
+  }
+
+  try {
+    let body: Buffer | undefined;
+    if (method === 'POST') {
+      const chunks: Buffer[] = [];
+      let size = 0;
+      for await (const chunk of req) {
+        const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        size += data.length;
+        if (size > 2 * 1024 * 1024) {
+          res.statusCode = 413;
+          res.end('Workflow request is too large');
+          return;
+        }
+        chunks.push(data);
+      }
+      body = Buffer.concat(chunks);
+    }
+
+    const headers: Record<string, string> = {};
+    if (typeof req.headers['content-type'] === 'string') {
+      headers['content-type'] = req.headers['content-type'];
+    }
+    const targetUrl = new URL('http://127.0.0.1:8188');
+    targetUrl.pathname = path;
+    targetUrl.search = parsedUrl.search;
+    const upstream = await fetch(targetUrl, {
+      method,
+      headers,
+      body,
+      signal: AbortSignal.timeout(30000)
+    });
+    res.statusCode = upstream.status;
+    for (const name of ['content-type', 'cache-control', 'content-disposition']) {
+      const value = upstream.headers.get(name);
+      if (value) res.setHeader(name, value);
+    }
+    res.end(Buffer.from(await upstream.arrayBuffer()));
+  } catch (error: any) {
+    logger.error(`[local-comfyui] ${error?.message || error}`);
+    res.statusCode = 502;
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.end(JSON.stringify({ error: 'Local ComfyUI is unavailable' }));
+  }
+};
+
 const imageDevProxyPlugin = (): Plugin => ({
   name: 'image-dev-proxy',
   configurePreviewServer(server) {
+    server.middlewares.use('/local-comfy', async (req, res) => {
+      await handleLocalComfyUiRequest(req, res, server.config.logger);
+    });
     server.middlewares.use('/api/novelai', async (req, res, next) => {
       await handleNovelAiProxyRequest(req, res, next, server.config.logger);
     });
@@ -435,6 +525,9 @@ const imageDevProxyPlugin = (): Plugin => ({
     });
   },
   configureServer(server) {
+    server.middlewares.use('/local-comfy', async (req, res) => {
+      await handleLocalComfyUiRequest(req, res, server.config.logger);
+    });
     server.middlewares.use('/api/novelai', async (req, res, next) => {
       await handleNovelAiProxyRequest(req, res, next, server.config.logger);
     });
@@ -637,12 +730,13 @@ export default defineConfig(({ mode }) => {
     base: mode === 'production' ? productionBase : '/',
     server: {
       port: 3000,
-      host: '0.0.0.0',
+      host: '127.0.0.1',
       allowedHosts: ['.cnb.run', '.cnb.space', '.cnb.cool']
     },
     plugins: [
       react(),
       imageDevProxyPlugin(),
+      localGitHubSyncPlugin(),
       stripSameOriginAssetCrossoriginPlugin(),
       assertSafeAssetBasePlugin(),
       assertSingleReactInstancePlugin()
